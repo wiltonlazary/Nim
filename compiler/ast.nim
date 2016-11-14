@@ -58,7 +58,8 @@ type
     nkFloat64Lit,
     nkFloat128Lit,
     nkStrLit,             # a string literal ""
-    nkRStrLit,            # a raw string literal r""
+    nkRStrLit,            # a raw string literal r""; special case by AST
+                          # codegens for verbatim nodes
     nkTripleStrLit,       # a triple string literal """
     nkNilLit,             # the nil literal
                           # end of atoms
@@ -812,6 +813,7 @@ type
                               # for routines a superop-ID
     offset*: int              # offset of record field
     loc*: TLoc
+    cg*: PNode                # representation in the code generator
     annex*: PLib              # additional fields (seldom used, so we use a
                               # reference to another object to safe space)
     constraint*: PNode        # additional constraints like 'lit|result'; also

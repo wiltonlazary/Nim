@@ -21,7 +21,6 @@ proc hasNoInit(call: PNode): bool {.inline.} =
 proc fixupCall(p: BProc, le, ri: PNode, d: var TLoc,
                callee, params: Rope) =
   var pl = callee & ~"(" & params
-  # getUniqueType() is too expensive here:
   var typ = skipTypes(ri.sons[0].typ, abstractInst)
   if typ.sons[0] != nil:
     if isInvalidReturnType(typ.sons[0]):
@@ -413,13 +412,12 @@ proc genPatternCall(p: BProc; ri: PNode; pat: string; typ: PType): Rope =
 proc genInfixCall(p: BProc, le, ri: PNode, d: var TLoc) =
   var op: TLoc
   initLocExpr(p, ri.sons[0], op)
-  # getUniqueType() is too expensive here:
   var typ = skipTypes(ri.sons[0].typ, abstractInst)
   assert(typ.kind == tyProc)
   var length = sonsLen(ri)
   assert(sonsLen(typ) == sonsLen(typ.n))
   # don't call '$' here for efficiency:
-  let pat = ri.sons[0].sym.loc.r.data
+  let pat = ri.sons[0].sym.cg.strVal
   internalAssert pat != nil
   if pat.contains({'#', '(', '@', '\''}):
     var pl = genPatternCall(p, ri, pat, typ)
@@ -461,14 +459,13 @@ proc genNamedParamCall(p: BProc, ri: PNode, d: var TLoc) =
   var op: TLoc
   initLocExpr(p, ri.sons[0], op)
   var pl = ~"["
-  # getUniqueType() is too expensive here:
   var typ = skipTypes(ri.sons[0].typ, abstractInst)
   assert(typ.kind == tyProc)
   var length = sonsLen(ri)
   assert(sonsLen(typ) == sonsLen(typ.n))
 
   # don't call '$' here for efficiency:
-  let pat = ri.sons[0].sym.loc.r.data
+  let pat = ri.sons[0].sym.cg.strVal
   internalAssert pat != nil
   var start = 3
   if ' ' in pat:

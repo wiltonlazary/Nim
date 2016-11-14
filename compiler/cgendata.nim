@@ -16,7 +16,7 @@ import
 from msgs import TLineInfo
 
 type
-  TLabel* = Rope              # for the C generator a label is just a rope
+  TLabel* = PNode             # for the C generator a label is just a node
   TCFileSection* = enum       # the sections a generated C file consists of
     cfsMergeInfo,             # section containing merge information
     cfsHeaders,               # section for C include file headers
@@ -46,17 +46,17 @@ type
     ctUInt, ctUInt8, ctUInt16, ctUInt32, ctUInt64,
     ctArray, ctPtrToArray, ctStruct, ctPtr, ctNimStr, ctNimSeq, ctProc,
     ctCString
-  TCFileSections* = array[TCFileSection, Rope] # represents a generated C file
+  TCFileSections* = array[TCFileSection, PNode] # represents a generated C file
   TCProcSection* = enum       # the sections a generated C proc consists of
     cpsLocals,                # section of local variables for C proc
     cpsInit,                  # section for init of variables for C proc
     cpsStmts                  # section of local statements for C proc
-  TCProcSections* = array[TCProcSection, Rope] # represents a generated C proc
+  TCProcSections* = array[TCProcSection, PNode] # represents a generated C proc
   BModule* = ref TCGen
   BProc* = ref TCProc
   TBlock*{.final.} = object
     id*: int                  # the ID of the label; positive means that it
-    label*: Rope             # generated text for the label
+    label*: PNode             # generated text for the label
                               # nil if label is not used
     sections*: TCProcSections # the code beloging
     isLoop*: bool             # whether block is a loop
@@ -74,7 +74,7 @@ type
     inExceptBlock*: int       # are we currently inside an except block?
                               # leaving such scopes by raise or by return must
                               # execute any applicable finally blocks
-    finallySafePoints*: seq[Rope]  # For correctly cleaning up exceptions when
+    finallySafePoints*: seq[PNode]  # For correctly cleaning up exceptions when
                                     # using return in finally statements
     labels*: Natural          # for generating unique labels in the C proc
     blocks*: seq[TBlock]      # nested blocks
@@ -90,10 +90,10 @@ type
                               # requires 'T x = T()' to become 'T x; x = T()'
                               # (yes, C++ is weird like that)
     gcFrameId*: Natural       # for the GC stack marking
-    gcFrameType*: Rope        # the struct {} we put the GC markers into
+    gcFrameType*: PNode       # the struct {} we put the GC markers into
 
   TTypeSeq* = seq[PType]
-  TypeCache* = Table[SigHash, Rope]
+  TypeCache* = Table[SigHash, PNode]
 
   Codegenflag* = enum
     preventStackTrace,  # true if stack traces need to be prevented
@@ -103,14 +103,22 @@ type
     isHeaderFile,       # C source file is the header file
     includesStringh,    # C source file already includes ``<string.h>``
     objHasKidsValid     # whether we can rely on tfObjHasKids
+
+  BModuleList = ref object
+    mainModProcs*, mainModInit*, otherModsInit*, mainDatInit*: PNode
+    mapping*: Rope             # the generated mapping file (if requested)
+    modules*: seq[BModule]     # list of all compiled modules
+    forwardedProcsCounter*: int
+    generatedHeader*: BModule
+
   TCGen = object of TPassContext # represents a C source file
-    s*: TCFileSections        # sections of the C file
+    s*: TCFileSections           # sections of the C file
     flags*: set[Codegenflag]
     module*: PSym
     filename*: string
     cfilename*: string        # filename of the module (including path,
                               # without extension)
-    tmpBase*: Rope            # base for temp identifier generation
+    tmpBase*: string          # base for temp identifier generation
     typeCache*: TypeCache     # cache the generated types
     forwTypeCache*: TypeCache # cache for forward declarations of types
     declaredThings*: IntSet   # things we have declared in this .c file
@@ -124,30 +132,25 @@ type
     dataCache*: TNodeTable
     forwardedProcs*: TSymSeq  # keep forwarded procs here
     typeNodes*, nimTypes*: int # used for type info generation
-    typeNodesName*, nimTypesName*: Rope # used for type info generation
+    typeNodesName*, nimTypesName*: string # used for type info generation
     labels*: Natural          # for generating unique module-scope names
-    extensionLoaders*: array['0'..'9', Rope] # special procs for the
-                                              # OpenGL wrapper
-    injectStmt*: Rope
+    extensionLoaders*: array['0'..'9', string] # special procs for the
+                                               # OpenGL wrapper
+    injectStmt*: PNode
+    g*: BModuleList
 
-var
-  mainModProcs*, mainModInit*, otherModsInit*, mainDatInit*: Rope
-    # varuious parts of the main module
-  gMapping*: Rope             # the generated mapping file (if requested)
-  gModules*: seq[BModule] = @[] # list of all compiled modules
-  gForwardedProcsCounter*: int = 0
-
-proc s*(p: BProc, s: TCProcSection): var Rope {.inline.} =
+proc s*(p: BProc, s: TCProcSection): var PNode {.inline.} =
   # section in the current block
   result = p.blocks[p.blocks.len - 1].sections[s]
 
-proc procSec*(p: BProc, s: TCProcSection): var Rope {.inline.} =
+proc procSec*(p: BProc, s: TCProcSection): var PNode {.inline.} =
   # top level proc sections
   result = p.blocks[0].sections[s]
 
-proc bmod*(module: PSym): BModule =
-  # obtains the BModule for a given module PSym
-  result = gModules[module.position]
+when false:
+  proc bmod*(module: PSym): BModule =
+    # obtains the BModule for a given module PSym
+    result = gModules[module.position]
 
 proc newProc*(prc: PSym, module: BModule): BProc =
   new(result)
@@ -159,10 +162,10 @@ proc newProc*(prc: PSym, module: BModule): BProc =
   result.nestedTryStmts = @[]
   result.finallySafePoints = @[]
 
-iterator cgenModules*: BModule =
-  for i in 0..high(gModules):
+iterator cgenModules*(g: BModuleList): BModule =
+  for i in 0..high(g.modules):
     # ultimately, we are iterating over the file ids here.
     # some "files" won't have an associated cgen module (like stdin)
     # and we must skip over them.
-    if gModules[i] != nil: yield gModules[i]
+    if g.modules[i] != nil: yield g.modules[i]
 
