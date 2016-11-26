@@ -57,7 +57,7 @@ when false:
 proc isSimpleConst(typ: PType): bool =
   let t = skipTypes(typ, abstractVar)
   result = t.kind notin
-      {tyTuple, tyObject, tyArray, tyArrayConstr, tySet, tySequence} and not
+      {tyTuple, tyObject, tyArray, tySet, tySequence} and not
       (t.kind == tyProc and t.callConv == ccClosure)
 
 proc useStringh(m: BModule) =
@@ -123,21 +123,24 @@ proc freshLineInfo(p: BProc; info: TLineInfo): bool =
     result = true
 
 proc genLineDir(p: BProc, t: PNode) =
-  var line = t.info.safeLineNm
+  let info = t.info
+  #if t.kind in nkCallKinds+{nkStmtListExpr} and t.len > 1: t[1].info
+  #else: t.info
+  var line = info.safeLineNm
   if optEmbedOrigSrc in gGlobalOptions:
-    add(p.s(cpsStmts), ~"//" & t.info.sourceLine & rnl)
-  genCLineDir(p.s(cpsStmts), t.info.toFullPath, line)
+    add(p.s(cpsStmts), ~"//" & info.sourceLine & rnl)
+  genCLineDir(p.s(cpsStmts), info.toFullPath, line)
   if ({optStackTrace, optEndb} * p.options == {optStackTrace, optEndb}) and
       (p.prc == nil or sfPure notin p.prc.flags):
-    if freshLineInfo(p, t.info):
+    if freshLineInfo(p, info):
       linefmt(p, cpsStmts, "#endb($1, $2);$n",
-              line.rope, makeCString(toFilename(t.info)))
+              line.rope, makeCString(toFilename(info)))
   elif ({optLineTrace, optStackTrace} * p.options ==
       {optLineTrace, optStackTrace}) and
-      (p.prc == nil or sfPure notin p.prc.flags) and t.info.fileIndex >= 0:
-    if freshLineInfo(p, t.info):
+      (p.prc == nil or sfPure notin p.prc.flags) and info.fileIndex >= 0:
+    if freshLineInfo(p, info):
       linefmt(p, cpsStmts, "nimln($1, $2);$n",
-              line.rope, t.info.quotedFilename)
+              line.rope, info.quotedFilename)
 
 proc postStmtActions(p: BProc) {.inline.} =
   add(p.s(cpsStmts), p.module.injectStmt)
@@ -197,7 +200,7 @@ proc genRefAssign(p: BProc, dest, src: TLoc, flags: TAssignmentFlags)
 
 proc isComplexValueType(t: PType): bool {.inline.} =
   let t = t.skipTypes(abstractInst)
-  result = t.kind in {tyArray, tyArrayConstr, tySet, tyTuple, tyObject} or
+  result = t.kind in {tyArray, tySet, tyTuple, tyObject} or
     (t.kind == tyProc and t.callConv == ccClosure)
 
 proc resetLoc(p: BProc, loc: var TLoc) =
@@ -292,7 +295,7 @@ proc localVarDecl(p: BProc; s: PSym): Rope =
   if s.loc.k == locNone:
     fillLoc(s.loc, locLocalVar, s.typ, mangleName(p.module, s), OnStack)
     if s.kind == skLet: incl(s.loc.flags, lfNoDeepCopy)
-  result = getTypeDesc(p.module, s.loc.t)
+  result = getTypeDesc(p.module, s.typ)
   if s.constraint.isNil:
     if sfRegister in s.flags: add(result, " register")
     #elif skipTypes(s.typ, abstractInst).kind in GcTypeKinds:

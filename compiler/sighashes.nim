@@ -13,7 +13,7 @@ import ast, md5
 from hashes import Hash
 from astalgo import debug
 from types import typeToString
-from strutils import startsWith
+from strutils import startsWith, contains
 
 when false:
   type
@@ -126,8 +126,6 @@ proc hashType(c: var MD5Context, t: PType; flags: set[ConsiderFlag]) =
     c &= "\254"
     return
 
-  c &= char(t.kind)
-
   case t.kind
   of tyGenericInst:
     var x = t.lastSon
@@ -148,14 +146,23 @@ proc hashType(c: var MD5Context, t: PType; flags: set[ConsiderFlag]) =
     else:
       c.hashSym(t.sym)
     return
+  of tyAlias:
+    c.hashType t.lastSon, flags
+    return
   else:
     discard
+
+  c &= char(t.kind)
 
   case t.kind
   of tyObject, tyEnum:
     # Every cyclic type in Nim need to be constructed via some 't.sym', so this
     # is actually safe without an infinite recursion check:
     if t.sym != nil:
+      if "Future:" in t.sym.name.s:
+        writeStackTrace()
+        echo "yes ", t.sym.name.s
+        #quit 1
       c.hashSym(t.sym)
     else:
       lowlevel(t.id)

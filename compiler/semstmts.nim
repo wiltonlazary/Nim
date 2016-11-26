@@ -471,7 +471,7 @@ proc semVarOrLet(c: PContext, n: PNode, symkind: TSymKind): PNode =
     # this can only happen for errornous var statements:
     if typ == nil: continue
     typeAllowedCheck(a.info, typ, symkind)
-    var tup = skipTypes(typ, {tyGenericInst})
+    var tup = skipTypes(typ, {tyGenericInst, tyAlias})
     if a.kind == nkVarTuple:
       if tup.kind != tyTuple:
         localError(a.info, errXExpected, "tuple")
@@ -583,7 +583,7 @@ proc semForVars(c: PContext, n: PNode): PNode =
   result = n
   var length = sonsLen(n)
   let iterBase = n.sons[length-2].typ
-  var iter = skipTypes(iterBase, {tyGenericInst})
+  var iter = skipTypes(iterBase, {tyGenericInst, tyAlias})
   # length == 3 means that there is one for loop variable
   # and thus no tuple unpacking:
   if iter.kind != tyTuple or length == 3:
@@ -745,7 +745,7 @@ proc typeSectionRightSidePass(c: PContext, n: PNode) =
       var t = semTypeNode(c, a.sons[2], s.typ)
       if s.typ == nil:
         s.typ = t
-      elif t != s.typ:
+      elif t != s.typ and (s.typ == nil or s.typ.kind != tyAlias):
         # this can happen for e.g. tcan_alias_specialised_generic:
         assignType(s.typ, t)
         #debug s.typ
@@ -777,7 +777,7 @@ proc checkForMetaFields(n: PNode) =
     let t = n.sym.typ
     case t.kind
     of tySequence, tySet, tyArray, tyOpenArray, tyVar, tyPtr, tyRef,
-       tyProc, tyGenericInvocation, tyGenericInst:
+       tyProc, tyGenericInvocation, tyGenericInst, tyAlias:
       let start = ord(t.kind in {tyGenericInvocation, tyGenericInst})
       for i in start .. <t.sons.len:
         checkMeta(t.sons[i])
@@ -804,8 +804,9 @@ proc typeSectionFinalPass(c: PContext, n: PNode) =
         assert t != nil
         if t.kind in {tyObject, tyEnum, tyDistinct}:
           assert s.typ != nil
-          assignType(s.typ, t)
-          s.typ.id = t.id     # same id
+          if s.typ.kind != tyAlias:
+            assignType(s.typ, t)
+            s.typ.id = t.id     # same id
       checkConstructedType(s.info, s.typ)
       if s.typ.kind in {tyObject, tyTuple} and not s.typ.n.isNil:
         checkForMetaFields(s.typ.n)
@@ -1366,7 +1367,9 @@ proc semMethod(c: PContext, n: PNode): PNode =
     for col in countup(1, sonsLen(tt)-1):
       let t = tt.sons[col]
       if t != nil and t.kind == tyGenericInvocation:
-        var x = skipTypes(t.sons[0], {tyVar, tyPtr, tyRef, tyGenericInst, tyGenericInvocation, tyGenericBody})
+        var x = skipTypes(t.sons[0], {tyVar, tyPtr, tyRef, tyGenericInst,
+                                      tyGenericInvocation, tyGenericBody,
+                                      tyAlias})
         if x.kind == tyObject and t.len-1 == result.sons[genericParamsPos].len:
           foundObj = true
           x.methods.safeAdd((col,s))

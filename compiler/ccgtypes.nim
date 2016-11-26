@@ -106,6 +106,7 @@ proc typeName(typ: PType): Rope =
            else: ~"TY"
 
 proc getTypeName(m: BModule; typ: PType; sig: SigHash): Rope =
+  let typ = if typ.kind == tyAlias: typ.lastSon else: typ
   if typ.sym != nil and {sfImportc, sfExportc} * typ.sym.flags != {}:
     result = typ.sym.cg
   else:
@@ -133,10 +134,10 @@ proc mapType(typ: PType): TCTypeKind =
   of tyBool: result = ctBool
   of tyChar: result = ctChar
   of tySet: result = mapSetType(typ)
-  of tyOpenArray, tyArrayConstr, tyArray, tyVarargs: result = ctArray
+  of tyOpenArray, tyArray, tyVarargs: result = ctArray
   of tyObject, tyTuple: result = ctStruct
   of tyGenericBody, tyGenericInst, tyGenericParam, tyDistinct, tyOrdinal,
-     tyTypeDesc:
+     tyTypeDesc, tyAlias:
     result = mapType(lastSon(typ))
   of tyEnum:
     if firstOrd(typ) < 0:
@@ -152,7 +153,7 @@ proc mapType(typ: PType): TCTypeKind =
   of tyPtr, tyVar, tyRef:
     var base = skipTypes(typ.lastSon, typedescInst)
     case base.kind
-    of tyOpenArray, tyArrayConstr, tyArray, tyVarargs: result = ctPtrToArray
+    of tyOpenArray, tyArray, tyVarargs: result = ctPtrToArray
     #of tySet:
     #  if mapSetType(base) == ctArray: result = ctPtrToArray
     #  else: result = ctPtr
@@ -277,7 +278,7 @@ proc getSimpleTypeDesc(m: BModule, typ: PType): Rope =
   of tyStatic:
     if typ.n != nil: result = getSimpleTypeDesc(m, lastSon typ)
     else: internalError("tyStatic for getSimpleTypeDesc")
-  of tyGenericInst:
+  of tyGenericInst, tyAlias:
     result = getSimpleTypeDesc(m, lastSon typ)
   else: result = nil
 
@@ -334,7 +335,7 @@ proc getTypeDescWeak(m: BModule; t: PType; check: var IntSet): Rope =
 
 proc paramStorageLoc(param: PSym): TStorageLoc =
   if param.typ.skipTypes({tyVar, tyTypeDesc}).kind notin {
-          tyArray, tyOpenArray, tyVarargs, tyArrayConstr}:
+          tyArray, tyOpenArray, tyVarargs}:
     result = OnStack
   else:
     result = OnUnknown
@@ -465,6 +466,12 @@ proc genRecordFieldsAux(m: BModule, n: PNode,
 proc getRecordFields(m: BModule, typ: PType, check: var IntSet): Rope =
   result = genRecordFieldsAux(m, typ.n, nil, typ, check)
 
+proc fillObjectFields*(m: BModule; typ: PType) =
+  # sometimes generic objects are not consistently merged. We patch over
+  # this fact here.
+  var check = initIntSet()
+  discard getRecordFields(m, typ, check)
+
 proc getRecordDesc(m: BModule, typ: PType, name: Rope,
                    check: var IntSet): Rope =
   # declare the record:
@@ -543,7 +550,7 @@ proc resolveStarsInCppType(typ: PType, idx, stars: int): PType =
 
 const
   irrelevantForBackend = {tyGenericBody, tyGenericInst, tyGenericInvocation,
-                          tyDistinct, tyRange, tyStatic}
+                          tyDistinct, tyRange, tyStatic, tyAlias}
 
 proc getTypeDescAux(m: BModule, origTyp: PType, check: var IntSet): Rope =
   # returns only the type's name
@@ -565,7 +572,7 @@ proc getTypeDescAux(m: BModule, origTyp: PType, check: var IntSet): Rope =
                     compileToCpp(m): "&" else: "*"
     var et = origTyp.skipTypes(abstractInst).lastSon
     var etB = et.skipTypes(abstractInst)
-    if etB.kind in {tyArrayConstr, tyArray, tyOpenArray, tyVarargs}:
+    if etB.kind in {tyArray, tyOpenArray, tyVarargs}:
       # this is correct! sets have no proper base type, so we treat
       # ``var set[char]`` in `getParamTypeDesc`
       et = elemType(etB)
@@ -728,7 +735,7 @@ proc getTypeDescAux(m: BModule, origTyp: PType, check: var IntSet): Rope =
             atom t.id, atom m.module.id])
           addf(m.s[cfsForwardTypes], getForwardStructFormat(m),
              [structOrUnion(t), result])
-        doAssert m.forwTypeCache[sig] == result
+        assert m.forwTypeCache[sig] == result
       m.typeCache[sig] = result # always call for sideeffects:
       let recdesc = if t.kind != tyTuple: getRecordDesc(m, t, result, check)
                     else: getTupleDesc(m, t, result, check)
@@ -742,7 +749,7 @@ proc getTypeDescAux(m: BModule, origTyp: PType, check: var IntSet): Rope =
       of 1, 2, 4, 8: addf(m.s[cfsTypes], "typedef NU$2 $1;$n", [result, atom(s*8)])
       else: addf(m.s[cfsTypes], "typedef NU8 $1[$2];$n",
              [result, atom(getSize(t))])
-  of tyGenericInst, tyDistinct, tyOrdinal, tyTypeDesc:
+  of tyGenericInst, tyDistinct, tyOrdinal, tyTypeDesc, tyAlias:
     result = getTypeDescAux(m, lastSon(t), check)
   else:
     internalError("getTypeDescAux(" & $t.kind & ')')
@@ -751,6 +758,7 @@ proc getTypeDescAux(m: BModule, origTyp: PType, check: var IntSet): Rope =
   excl(check, t.id)
 
 proc getTypeDesc(m: BModule, typ: PType): Rope =
+  echo "getTypeDesc called!"
   var check = initIntSet()
   result = getTypeDescAux(m, typ, check)
 
@@ -1073,7 +1081,7 @@ proc genTypeInfo(m: BModule, t: PType): Rope =
       let markerProc = genTraverseProc(m, origType, sig, tiNew)
       addf(m.s[cfsTypeInit3], "$1.marker = $2;$n", [result, markerProc])
   of tyPtr, tyRange: genTypeInfoAux(m, t, t, result)
-  of tyArrayConstr, tyArray: genArrayInfo(m, t, result)
+  of tyArray: genArrayInfo(m, t, result)
   of tySet: genSetInfo(m, t, result)
   of tyEnum: genEnumInfo(m, t, result)
   of tyObject: genObjectInfo(m, t, origType, result)
