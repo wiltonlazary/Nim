@@ -21,6 +21,7 @@ const
   nkProcHeader* = nkProcDef # we share proc headers for both forward decls
                             # and full C function declarations to safe space.
   nkSemiList* = nkArgList # semicolon separated list (used for proc forwardings)
+  nkUnion* = nkRefTy
 
 # A full proc looks like this:  nkDecl(nkProcHeader(...), nkCurlyBlock(...))
 const
@@ -79,6 +80,7 @@ proc writeCgAst(w: var Writer; n: PNode) =
     dec w.indent
 
   case n.kind
+  of nkEmpty: discard
   of nkCurlyBlock:
     wr "{"
     inc w.indent
@@ -111,8 +113,16 @@ proc writeCgAst(w: var Writer; n: PNode) =
   of nkPrefix: wr n[0], "(", n[1], ")"
   of nkPostfix: wr "(", n[1], ")", n[0]
   of nkAsgn: wr n[0], " = ", n[1]
-  of nkAddr: wr "&(", n[0], ")"
-  of nkDerefExpr: wr "*(", n[0], ")"
+  of nkAddr:
+    if n[0].kind == nkDerefExpr:
+      wr "(", n[0], ")"
+    else:
+      wr "&(", n[0], ")"
+  of nkDerefExpr:
+    if n[0].kind == nkAddr:
+      wr "(", n[0], ")"
+    else:
+      wr "*(", n[0], ")"
   of nkDotExpr:
     if n[0].kind == nkDerefExpr:
       wr n[0][0], "->", n[1]
@@ -147,14 +157,19 @@ proc writeCgAst(w: var Writer; n: PNode) =
   of nkElifBranch: wr "else if (", n[0], ") ", n[1]
   of nkElse: wr "else ", n[0]
   of nkIfExpr: wr "((", n[0], ")? (", n[1], ") : (", n[2], "))"
-  of nkTypeDef: wr "\Ltypedef ", n[0], " ", n[1], ";"
+  of nkTypeDef: wr "\Ltypedef ", n[0], " ", n[1]
   of nkProcDef: wr "\L", n[0], " ", n[1], " ", n[2], n[3]
   of nkObjectTy:
     wr "struct ", n[0], "{"
     ind2Sep 1
     wr "\L}\L"
+  of nkUnion:
+    wr "union ", n[0], "{"
+    ind2Sep 1
+    wr "\L}\L"
   of nkOfInherit: wr n[0], ": ", n[1]
   of nkPtrTy: wr n[0], "*"
+  of nkVarTy: wr n[0], "&"
   else: localError n.info, "codegen produced an unsupported node"
 
 proc writeCgAst*(filename: string; n: PNode) =
@@ -168,6 +183,10 @@ proc atom*(s: string): PNode =
 
 proc atom*(i: BiggestInt): PNode =
   result = newStrNode(nkVerbatim, $i)
+
+proc atom*(s: string; typ: PType): PNode =
+  result = newStrNode(nkVerbatim, s)
+  result.typ = typ
 
 when false:
   proc track*(result, origin: PNode) {.inline.} =

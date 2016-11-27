@@ -854,6 +854,7 @@ type
                               # -1 means that the size is unkwown
     align*: int16             # the type's alignment requirements
     lockLevel*: TLockLevel    # lock level as required for deadlock checking
+    cg*: PNode
     loc*: TLoc
 
   TPair* = object

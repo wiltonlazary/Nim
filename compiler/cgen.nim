@@ -72,47 +72,18 @@ proc useHeader(m: BModule, sym: PSym) =
 
 proc cgsym(m: BModule, name: string): PNode
 
-proc appcg(m: BModule, c: var Rope, frmt: FormatStr,
-           args: varargs[Rope]) =
-  add(c, ropecg(m, frmt, args))
-
-proc appcg(m: BModule, s: TCFileSection, frmt: FormatStr,
-           args: varargs[Rope]) =
-  add(m.s[s], ropecg(m, frmt, args))
-
-proc appcg(p: BProc, s: TCProcSection, frmt: FormatStr,
-           args: varargs[Rope]) =
-  add(p.s(s), ropecg(p.module, frmt, args))
-
-proc line(p: BProc, s: TCProcSection, r: Rope) =
-  add(p.s(s), r)
-
-proc line(p: BProc, s: TCProcSection, r: string) =
-  add(p.s(s), indentLine(p, r.rope))
-
-proc lineF(p: BProc, s: TCProcSection, frmt: FormatStr,
-              args: openarray[Rope]) =
-  add(p.s(s), indentLine(p, frmt % args))
-
-proc lineCg(p: BProc, s: TCProcSection, frmt: FormatStr,
-               args: varargs[Rope]) =
-  add(p.s(s), indentLine(p, ropecg(p.module, frmt, args)))
-
-proc linefmt(p: BProc, s: TCProcSection, frmt: FormatStr,
-             args: varargs[Rope]) =
-  add(p.s(s), indentLine(p, ropecg(p.module, frmt, args)))
-
 proc safeLineNm(info: TLineInfo): int =
   result = toLinenumber(info)
   if result < 0: result = 0 # negative numbers are not allowed in #line
 
-proc genCLineDir(r: var Rope, filename: string, line: int) =
+proc genCLineDir(r: PNode, filename: string, line: int) =
   assert line >= 0
   if optLineDir in gOptions:
-    addf(r, "$N#line $2 $1$N",
-        [rope(makeSingleLineCString(filename)), rope(line)])
+    let a = atom("\L#line " & makeSingleLineCString(filename) & " " &
+                 $line & "\L")
+    add(r, a)
 
-proc genCLineDir(r: var Rope, info: TLineInfo) =
+proc genCLineDir(r: PNode, info: TLineInfo) =
   genCLineDir(r, info.toFullPath, info.safeLineNm)
 
 proc freshLineInfo(p: BProc; info: TLineInfo): bool =
@@ -128,19 +99,18 @@ proc genLineDir(p: BProc, t: PNode) =
   #else: t.info
   var line = info.safeLineNm
   if optEmbedOrigSrc in gGlobalOptions:
-    add(p.s(cpsStmts), ~"//" & info.sourceLine & rnl)
+    add(p.s(cpsStmts), atom("//" & $info.sourceLine & "\L"))
   genCLineDir(p.s(cpsStmts), info.toFullPath, line)
   if ({optStackTrace, optEndb} * p.options == {optStackTrace, optEndb}) and
       (p.prc == nil or sfPure notin p.prc.flags):
-    if freshLineInfo(p, info):
-      linefmt(p, cpsStmts, "#endb($1, $2);$n",
-              line.rope, makeCString(toFilename(info)))
+    discard
   elif ({optLineTrace, optStackTrace} * p.options ==
       {optLineTrace, optStackTrace}) and
       (p.prc == nil or sfPure notin p.prc.flags) and info.fileIndex >= 0:
     if freshLineInfo(p, info):
-      linefmt(p, cpsStmts, "nimln($1, $2);$n",
-              line.rope, info.quotedFilename)
+      let line = atom(line)
+      let file = atom($info.quotedFilename)
+      add(p.s(cpsStmts), tc nimln(`line`, `file`))
 
 proc postStmtActions(p: BProc) {.inline.} =
   add(p.s(cpsStmts), p.module.injectStmt)
