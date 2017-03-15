@@ -11,13 +11,19 @@
 # TODO:
 # - eliminate "used" field
 # - make searching for block O(1)
-{.push profiler:off.}
+{.push memtracker:on.}
+
+when defined(memtracker):
+  include "system/memtracker"
 
 include osalloc
 
 template track(op, address, size) =
   when defined(memTracker):
     memTrackerOp(op, address, size)
+
+when compileOption("memtracker"):
+  {.hint: "yes active for alloc.nim".}
 
 # We manage *chunks* of memory. Each chunk is a multiple of the page size.
 # Each chunk starts at an address that is divisible by the page size. Chunks
@@ -326,7 +332,7 @@ proc requestOsChunks(a: var MemRegion, size: int): PBigChunk =
       result, result.heapLink, result.origSize)
 
   when defined(memtracker):
-    trackLocation(addr result.origSize, sizeof(int)*2)
+    trackLocation(addr result.origSize, sizeof(int))
   a.heapLink = result
 
   sysAssert((cast[ByteAddress](result) and PageMask) == 0, "requestOsChunks 1")
@@ -439,7 +445,8 @@ proc freeBigChunk(a: var MemRegion, c: PBigChunk) =
   listAdd(a.freeChunksList, c)
   # set 'used' to false:
   c.origSize = c.origSize and not 1
-  track("setUsedToFalse", addr c.origSize, sizeof(int))
+  #if c.origSize == 0:
+  #  track("setUsedToFalse", addr c.origSize, sizeof(int))
   #else:
   #  freeOsChunks(a, c, c.size)
 
@@ -447,8 +454,10 @@ proc splitChunk(a: var MemRegion, c: PBigChunk, size: int) =
   var rest = cast[PBigChunk](cast[ByteAddress](c) +% size)
   sysAssert(rest notin a.freeChunksList, "splitChunk")
   rest.size = c.size - size
-  rest.origSize = 0 # not used and size irrelevant
-  track("rest.origSize", addr rest.origSize, sizeof(int))
+  rest.origSize = rest.origSize and not 1 # not used and size irrelevant
+  # set 'used' to false:
+  c.origSize = c.origSize and not 1
+  #track("rest.origSize", addr rest.origSize, sizeof(int))
   rest.next = nil
   rest.prev = nil
   rest.prevSize = size
@@ -484,8 +493,11 @@ proc getBigChunk(a: var MemRegion, size: int): PBigChunk =
         splitChunk(a, result, size)
   result.prevSize = 0 # XXX why is this needed?
   # set 'used' to to true:
+  if result.origSize <= 1:
+    track("setUsedToFalse no before that", addr result.origSize, sizeof(int))
   result.origSize = result.origSize or 1
-  track("setUsedToFalse", addr result.origSize, sizeof(int))
+  if result.origSize <= 1:
+    track("setUsedToFalse", addr result.origSize, sizeof(int))
 
   incl(a, a.chunkStarts, pageIndex(result))
   dec(a.freeMem, size)

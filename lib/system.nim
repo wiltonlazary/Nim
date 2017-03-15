@@ -2463,8 +2463,8 @@ template accumulateResult*(iter: untyped) =
 const NimStackTrace = compileOption("stacktrace")
 
 template coroutinesSupportedPlatform(): bool =
-  when defined(sparc) or defined(ELATE) or compileOption("gc", "v2") or 
-    defined(boehmgc) or defined(gogc) or defined(nogc) or defined(gcStack) or 
+  when defined(sparc) or defined(ELATE) or compileOption("gc", "v2") or
+    defined(boehmgc) or defined(gogc) or defined(nogc) or defined(gcStack) or
     defined(gcMarkAndSweep):
     false
   else:
@@ -3015,9 +3015,6 @@ when not defined(JS): #and not defined(nimscript):
         ## lead to the ``raise`` statement. This only works for debug builds.
 
     {.push stack_trace: off, profiler:off.}
-    when defined(memtracker):
-      include "system/memtracker"
-
     when not defined(nimscript):
       proc zeroMem(p: pointer, size: Natural) =
         c_memset(p, 0, size)

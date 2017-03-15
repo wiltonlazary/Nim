@@ -65,11 +65,13 @@ proc addEntry(entry: LogEntry) =
       let c = cast[int](entry.address)
       let d = c + entry.size-1
       if x <= d and c <= y:
-        interesting = myThreadId() != entry.thread # true
+        interesting = (entry.line != 461 and entry.line != 500 and entry.line != 449 and entry.line != 459) or
+          myThreadId() != entry.thread
         break
     if interesting:
       gLog.disabled = true
-      cprintf("interesting %s:%ld %s\n", entry.file, entry.line, entry.op)
+      cprintf("interesting %s:%ld %s tracker: %ld writer: %ld\n", entry.file, entry.line,
+        entry.op, entry.thread, myThreadId())
       let x = cast[proc() {.nimcall, tags: [], gcsafe, locks: 0.}](writeStackTrace)
       x()
       quit 1
@@ -88,18 +90,5 @@ proc memTrackerOp*(op: cstring; address: pointer; size: int) {.tags: [],
          locks: 0, gcsafe.} =
   addEntry LogEntry(op: op, address: address, size: size,
       file: "", line: 0, thread: myThreadId())
-
-proc memTrackerDisable*() =
-  gLog.disabled = true
-
-proc memTrackerEnable*() =
-  gLog.disabled = false
-
-proc logPendingOps() {.noconv.} =
-  # forward declared and called from Nim's signal handler.
-  gLogger(gLog)
-  gLog.count = 0
-
-addQuitProc logPendingOps
 
 {.pop.}
