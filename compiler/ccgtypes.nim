@@ -123,10 +123,11 @@ const
 
 proc typeName(typ: PType): Rope =
   let typ = typ.skipTypes(irrelevantForBackend)
-  result = if typ.sym != nil and typ.kind in {tyObject, tyEnum}:
-             typ.sym.name.s.mangle.rope
-           else:
-             ~"TY"
+  result =
+    if typ.sym != nil and typ.kind in {tyObject, tyEnum}:
+      typ.sym.name.s.mangle.rope
+    else:
+      rope($typ.kind)
 
 proc getTypeName(m: BModule; typ: PType; sig: SigHash): Rope =
   var t = typ
@@ -336,6 +337,7 @@ proc getTypePre(m: BModule, typ: PType; sig: SigHash): Rope =
     if result == nil: result = cacheGetType(m.typeCache, sig)
 
 proc structOrUnion(t: PType): Rope =
+  let t = t.skipTypes({tyAlias})
   (if tfUnion in t.flags: rope("union") else: rope("struct"))
 
 proc getForwardStructFormat(m: BModule): string =

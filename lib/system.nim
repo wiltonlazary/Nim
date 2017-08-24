@@ -422,7 +422,7 @@ type
 
   RootEffect* {.compilerproc.} = object of RootObj ## \
     ## base effect class; each effect should
-    ## inherit from `TEffect` unless you know what
+    ## inherit from `RootEffect` unless you know what
     ## you doing.
   TimeEffect* = object of RootEffect   ## Time effect.
   IOEffect* = object of RootEffect     ## IO effect.
@@ -1313,7 +1313,7 @@ const
   hostCPU* {.magic: "HostCPU".}: string = ""
     ## a string that describes the host CPU. Possible values:
     ## "i386", "alpha", "powerpc", "powerpc64", "powerpc64el", "sparc",
-    ## "amd64", "mips", "mipsel", "arm", "arm64".
+    ## "amd64", "mips", "mipsel", "arm", "arm64", "mips64", "mips64el".
 
   seqShallowFlag = low(int)
 
@@ -2556,7 +2556,7 @@ const NimStackTrace = compileOption("stacktrace")
 
 template coroutinesSupportedPlatform(): bool =
   when defined(sparc) or defined(ELATE) or compileOption("gc", "v2") or
-    defined(boehmgc) or defined(gogc) or defined(nogc) or defined(gcStack) or
+    defined(boehmgc) or defined(gogc) or defined(nogc) or defined(gcRegions) or
     defined(gcMarkAndSweep):
     false
   else:
@@ -2757,10 +2757,10 @@ when not defined(JS): #and not defined(nimscript):
   {.push stack_trace: off, profiler:off.}
 
   when hasAlloc:
-    when not defined(gcStack):
+    when not defined(gcRegions):
       proc initGC() {.gcsafe.}
     when not defined(boehmgc) and not defined(useMalloc) and
-        not defined(gogc) and not defined(gcStack):
+        not defined(gogc) and not defined(gcRegions):
       proc initAllocator() {.inline.}
 
     proc initStackBottom() {.inline, compilerproc.} =
