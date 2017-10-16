@@ -37,15 +37,15 @@
 ## Retrieving the value of a JSON node can then be achieved using one of the
 ## helper procedures, which include:
 ##
-## * ``getNum``
-## * ``getFNum``
+## * ``getInt``
+## * ``getFloat``
 ## * ``getStr``
-## * ``getBVal``
+## * ``getBool``
 ##
 ## To retrieve the value of ``"key"`` you can do the following:
 ##
 ## .. code-block:: Nim
-##   doAssert jsonNode["key"].getFNum() == 3.14
+##   doAssert jsonNode["key"].getFloat() == 3.14
 ##
 ## The ``[]`` operator will raise an exception when the specified field does
 ## not exist. If you wish to avoid this behaviour you can use the ``{}``
@@ -681,14 +681,25 @@ proc getStr*(n: JsonNode, default: string = ""): string =
   if n.isNil or n.kind != JString: return default
   else: return n.str
 
-proc getNum*(n: JsonNode, default: BiggestInt = 0): BiggestInt =
+proc getInt*(n: JsonNode, default: int = 0): int =
   ## Retrieves the int value of a `JInt JsonNode`.
+  ##
+  ## Returns ``default`` if ``n`` is not a ``JInt``, or if ``n`` is nil.
+  if n.isNil or n.kind != JInt: return default
+  else: return int(n.num)
+
+proc getBiggestInt*(n: JsonNode, default: BiggestInt = 0): BiggestInt =
+  ## Retrieves the BiggestInt value of a `JInt JsonNode`.
   ##
   ## Returns ``default`` if ``n`` is not a ``JInt``, or if ``n`` is nil.
   if n.isNil or n.kind != JInt: return default
   else: return n.num
 
-proc getFNum*(n: JsonNode, default: float = 0.0): float =
+proc getNum*(n: JsonNode, default: BiggestInt = 0): BiggestInt {.deprecated.} =
+  ## Deprecated - use getInt or getBiggestInt instead
+  getBiggestInt(n, default)
+
+proc getFloat*(n: JsonNode, default: float = 0.0): float =
   ## Retrieves the float value of a `JFloat JsonNode`.
   ##
   ## Returns ``default`` if ``n`` is not a ``JFloat`` or ``JInt``, or if ``n`` is nil.
@@ -698,12 +709,20 @@ proc getFNum*(n: JsonNode, default: float = 0.0): float =
   of JInt: return float(n.num)
   else: return default
 
-proc getBVal*(n: JsonNode, default: bool = false): bool =
+proc getFNum*(n: JsonNode, default: float = 0.0): float {.deprecated.} =
+  ## Deprecated - use getFloat instead
+  getFloat(n, default)
+
+proc getBool*(n: JsonNode, default: bool = false): bool =
   ## Retrieves the bool value of a `JBool JsonNode`.
   ##
   ## Returns ``default`` if ``n`` is not a ``JBool``, or if ``n`` is nil.
   if n.isNil or n.kind != JBool: return default
   else: return n.bval
+
+proc getBVal*(n: JsonNode, default: bool = false): bool {.deprecated.} =
+  ## Deprecated - use getBVal instead
+  getBool(n, default)
 
 proc getFields*(n: JsonNode,
     default = initOrderedTable[string, JsonNode](4)):
@@ -720,6 +739,16 @@ proc getElems*(n: JsonNode, default: seq[JsonNode] = @[]): seq[JsonNode] =
   ## Returns ``default`` if ``n`` is not a ``JArray``, or if ``n`` is nil.
   if n.isNil or n.kind != JArray: return default
   else: return n.elems
+
+proc add*(father, child: JsonNode) =
+  ## Adds `child` to a JArray node `father`.
+  assert father.kind == JArray
+  father.elems.add(child)
+
+proc add*(obj: JsonNode, key: string, val: JsonNode) =
+  ## Sets a field from a `JObject`.
+  assert obj.kind == JObject
+  obj.fields[key] = val
 
 proc `%`*(s: string): JsonNode =
   ## Generic constructor for JSON data. Creates a new `JString JsonNode`.
@@ -759,6 +788,19 @@ proc `%`*[T](elements: openArray[T]): JsonNode =
   result = newJArray()
   for elem in elements: result.add(%elem)
 
+when false:
+  # For 'consistency' we could do this, but that only pushes people further
+  # into that evil comfort zone where they can use Nim without understanding it
+  # causing problems later on.
+  proc `%`*(elements: set[bool]): JsonNode =
+    ## Generic constructor for JSON data. Creates a new `JObject JsonNode`.
+    ## This can only be used with the empty set ``{}`` and is supported
+    ## to prevent the gotcha ``%*{}`` which used to produce an empty
+    ## JSON array.
+    result = newJObject()
+    assert false notin elements, "usage error: only empty sets allowed"
+    assert true notin elements, "usage error: only empty sets allowed"
+
 proc `%`*(o: object): JsonNode =
   ## Generic constructor for JSON data. Creates a new `JObject JsonNode`
   result = newJObject()
@@ -779,27 +821,25 @@ proc `%`*(o: enum): JsonNode =
 proc toJson(x: NimNode): NimNode {.compiletime.} =
   case x.kind
   of nnkBracket: # array
+    if x.len == 0: return newCall(bindSym"newJArray")
     result = newNimNode(nnkBracket)
     for i in 0 .. <x.len:
       result.add(toJson(x[i]))
-
+    result = newCall(bindSym"%", result)
   of nnkTableConstr: # object
+    if x.len == 0: return newCall(bindSym"newJObject")
     result = newNimNode(nnkTableConstr)
     for i in 0 .. <x.len:
       x[i].expectKind nnkExprColonExpr
-      result.add(newNimNode(nnkExprColonExpr).add(x[i][0]).add(toJson(x[i][1])))
-
+      result.add newTree(nnkExprColonExpr, x[i][0], toJson(x[i][1]))
+    result = newCall(bindSym"%", result)
   of nnkCurly: # empty object
-    result = newNimNode(nnkTableConstr)
     x.expectLen(0)
-
+    result = newCall(bindSym"newJObject")
   of nnkNilLit:
-    result = newCall("newJNull")
-
+    result = newCall(bindSym"newJNull")
   else:
-    result = x
-
-  result = prefix(result, "%")
+    result = newCall(bindSym"%", x)
 
 macro `%*`*(x: untyped): untyped =
   ## Convert an expression to a JsonNode directly, without having to specify
@@ -908,16 +948,6 @@ proc contains*(node: JsonNode, val: JsonNode): bool =
 
 proc existsKey*(node: JsonNode, key: string): bool {.deprecated.} = node.hasKey(key)
   ## Deprecated for `hasKey`
-
-proc add*(father, child: JsonNode) =
-  ## Adds `child` to a JArray node `father`.
-  assert father.kind == JArray
-  father.elems.add(child)
-
-proc add*(obj: JsonNode, key: string, val: JsonNode) =
-  ## Sets a field from a `JObject`.
-  assert obj.kind == JObject
-  obj.fields[key] = val
 
 proc `[]=`*(obj: JsonNode, key: string, val: JsonNode) {.inline.} =
   ## Sets a field from a `JObject`.
@@ -1203,7 +1233,7 @@ proc parseJson(p: var JsonParser): JsonNode =
     raiseParseErr(p, "{")
 
 when not defined(js):
-  proc parseJson*(s: Stream, filename: string): JsonNode =
+  proc parseJson*(s: Stream, filename: string = ""): JsonNode =
     ## Parses from a stream `s` into a `JsonNode`. `filename` is only needed
     ## for nice error messages.
     ## If `s` contains extra data, it will raise `JsonParsingError`.
@@ -1331,7 +1361,7 @@ proc getEnum(node: JsonNode, ast: string, T: typedesc): T =
     # TODO: I shouldn't need this proc.
     proc convert[T](x: BiggestInt): T = T(x)
     verifyJsonKind(node, {JInt}, ast)
-    return convert[T](node.getNum())
+    return convert[T](node.getBiggestInt())
   else:
     verifyJsonKind(node, {JString}, ast)
     return parseEnum[T](node.getStr())
@@ -1933,5 +1963,9 @@ when isMainModule:
       doAssert(false)
     except JsonParsingError:
       doAssert getCurrentExceptionMsg().contains(errorMessages[errEofExpected])
+
+  # bug #6438
+  doAssert($ %*[] == "[]")
+  doAssert($ %*{} == "{}")
 
   echo("Tests succeeded!")

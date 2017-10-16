@@ -91,7 +91,8 @@ type
     cmdRst2html,              # convert a reStructuredText file to HTML
     cmdRst2tex,               # convert a reStructuredText file to TeX
     cmdInteractive,           # start interactive session
-    cmdRun                    # run the project via TCC backend
+    cmdRun,                   # run the project via TCC backend
+    cmdJsonScript             # compile a .json build file
   TStringSeq* = seq[string]
   TGCMode* = enum             # the selected GC
     gcNone, gcBoehm, gcGo, gcRegions, gcMarkAndSweep, gcRefc,
@@ -143,6 +144,7 @@ var
   isServing*: bool = false
   gNoNimblePath* = false
   gExperimentalMode*: bool
+  newDestructors*: bool
 
 proc importantComments*(): bool {.inline.} = gCmd in {cmdDoc, cmdIdeTools}
 proc usesNativeGC*(): bool {.inline.} = gSelectedGC >= gcRefc
