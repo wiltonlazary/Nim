@@ -798,8 +798,7 @@ proc genRecordField(p: BProc, e: PNode, d: var TLoc) =
 
 proc genInExprAux(p: BProc, e: PNode, a, b, d: var TLoc)
 
-proc genFieldCheck(p: BProc, e: PNode, obj: Rope, field: PSym;
-                   origTy: PType) =
+proc genFieldCheck(p: BProc, e: PNode, obj: Rope, field: PSym) =
   var test, u, v: TLoc
   for i in countup(1, sonsLen(e) - 1):
     var it = e.sons[i]
@@ -811,12 +810,10 @@ proc genFieldCheck(p: BProc, e: PNode, obj: Rope, field: PSym;
     assert(disc.kind == nkSym)
     initLoc(test, locNone, it, OnStack)
     initLocExpr(p, it.sons[1], u)
-    var o = obj
-    let d = lookupFieldAgain(p, origTy, disc.sym, o)
     initLoc(v, locExpr, disc, OnUnknown)
-    v.r = o
+    v.r = obj
     v.r.add(".")
-    v.r.add(d.loc.r)
+    v.r.add(disc.sym.loc.r)
     genInExprAux(p, it, u, v, test)
     let id = nodeTableTestOrSet(p.module.dataCache,
                                newStrNode(nkStrLit, field.name.s), p.module.labels)
@@ -842,7 +839,7 @@ proc genCheckedRecordField(p: BProc, e: PNode, d: var TLoc) =
     if field.loc.r == nil: fillObjectFields(p.module, ty)
     if field.loc.r == nil:
       internalError(e.info, "genCheckedRecordField") # generate the checks:
-    genFieldCheck(p, e, r, field, ty)
+    genFieldCheck(p, e, r, field)
     add(r, rfmt(nil, ".$1", field.loc.r))
     putIntoDest(p, d, e.sons[0], r, a.storage)
   else:
@@ -1226,7 +1223,7 @@ proc genObjConstr(p: BProc, e: PNode, d: var TLoc) =
     if field.loc.r == nil: fillObjectFields(p.module, ty)
     if field.loc.r == nil: internalError(e.info, "genObjConstr")
     if it.len == 3 and optFieldCheck in p.options:
-      genFieldCheck(p, it.sons[2], r, field, ty)
+      genFieldCheck(p, it.sons[2], r, field)
     add(tmp2.r, ".")
     add(tmp2.r, field.loc.r)
     tmp2.k = locTemp
@@ -1696,7 +1693,7 @@ proc genRangeChck(p: BProc, n: PNode, d: var TLoc, magic: string) =
 
 proc genConv(p: BProc, e: PNode, d: var TLoc) =
   let destType = e.typ.skipTypes({tyVar, tyGenericInst, tyAlias})
-  if compareTypes(destType, e.sons[1].typ, dcEqIgnoreDistinct):
+  if sameBackendType(destType, e.sons[1].typ):
     expr(p, e.sons[1], d)
   else:
     genSomeCast(p, e, d)
@@ -1863,7 +1860,10 @@ proc genMagicExpr(p: BProc, e: PNode, d: var TLoc, op: TMagic) =
     initLocExpr(p, e.sons[2], b)
     genDeepCopy(p, a, b)
   of mDotDot, mEqCString: genCall(p, e, d)
-  else: internalError(e.info, "genMagicExpr: " & $op)
+  else:
+    when defined(debugMagics):
+      echo p.prc.name.s, " ", p.prc.id, " ", p.prc.flags, " ", p.prc.ast[genericParamsPos].kind
+    internalError(e.info, "genMagicExpr: " & $op)
 
 proc genSetConstr(p: BProc, e: PNode, d: var TLoc) =
   # example: { a..b, c, d, e, f..g }

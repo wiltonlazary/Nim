@@ -66,7 +66,7 @@ proc cycle*[T](s: openArray[T], n: Natural): seq[T] =
   ##
   ## Example:
   ##
-  ## .. code-block:
+  ## .. code-block::
   ##
   ##   let
   ##     s = @[1, 2, 3]
@@ -84,7 +84,7 @@ proc repeat*[T](x: T, n: Natural): seq[T] =
   ##
   ## Example:
   ##
-  ## .. code-block:
+  ## .. code-block::
   ##
   ##   let
   ##     total = repeat(5, 3)
@@ -109,8 +109,6 @@ proc deduplicate*[T](s: openArray[T]): seq[T] =
   result = @[]
   for itm in items(s):
     if not result.contains(itm): result.add(itm)
-
-{.deprecated: [distnct: deduplicate].}
 
 proc zip*[S, T](s1: openArray[S], s2: openArray[T]): seq[tuple[a: S, b: T]] =
   ## Returns a new sequence with a combination of the two input containers.
@@ -706,16 +704,17 @@ template newSeqWith*(len: int, init: untyped): untyped =
     result[i] = init
   result
 
-proc mapLitsImpl(constructor: NimNode; op: NimNode; nested: bool): NimNode =
-  if isAtomicLit(constructor):
+proc mapLitsImpl(constructor: NimNode; op: NimNode; nested: bool;
+                 filter = nnkLiterals): NimNode =
+  if constructor.kind in filter:
     result = newNimNode(nnkCall, lineInfoFrom=constructor)
     result.add op
     result.add constructor
   else:
     result = newNimNode(constructor.kind, lineInfoFrom=constructor)
     for v in constructor:
-      if nested or isAtomicLit(v):
-        result.add mapLitsImpl(v, op, nested)
+      if nested or v.kind in filter:
+        result.add mapLitsImpl(v, op, nested, filter)
       else:
         result.add v
 
