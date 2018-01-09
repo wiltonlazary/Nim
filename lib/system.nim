@@ -249,6 +249,10 @@ type
 when defined(nimHasOpt):
   type opt*{.magic: "Opt".}[T]
 
+when defined(nimNewRuntime):
+  type sink*{.magic: "BuiltinType".}[T]
+  type lent*{.magic: "BuiltinType".}[T]
+
 proc high*[T: Ordinal](x: T): T {.magic: "High", noSideEffect.}
   ## returns the highest possible index of an array, a sequence, a string or
   ## the highest possible value of an ordinal value `x`. As a special
@@ -742,6 +746,18 @@ proc newSeqOfCap*[T](cap: Natural): seq[T] {.
   ## creates a new sequence of type ``seq[T]`` with length 0 and capacity
   ## ``cap``.
   discard
+
+when not defined(JS):
+  proc newSeqUninitialized*[T: SomeNumber](len: Natural): seq[T] =
+    ## creates a new sequence of type ``seq[T]`` with length ``len``.
+    ##
+    ## Only available for numbers types. Note that the sequence will be
+    ## uninitialized. After the creation of the sequence you should assign
+    ## entries to the sequence instead of adding them.
+
+    result = newSeqOfCap[T](len)
+    var s = cast[PGenericSeq](result)
+    s.len = len
 
 proc len*[TOpenArray: openArray|varargs](x: TOpenArray): int {.
   magic: "LengthOpenArray", noSideEffect.}
