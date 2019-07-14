@@ -1,22 +1,24 @@
 discard """
-  output: '''(k: kindA, a: (x: "abc", z: [1, 1, 3]), method: ())
-(k: kindA, a: (x: "abc", z: [1, 2, 3]), method: ())
-(k: kindA, a: (x: "abc", z: [1, 3, 3]), method: ())
-(k: kindA, a: (x: "abc", z: [1, 4, 3]), method: ())
-(k: kindA, a: (x: "abc", z: [1, 5, 3]), method: ())
-(k: kindA, a: (x: "abc", z: [1, 6, 3]), method: ())
-(k: kindA, a: (x: "abc", z: [1, 7, 3]), method: ())
-(k: kindA, a: (x: "abc", z: [1, 8, 3]), method: ())
-(k: kindA, a: (x: "abc", z: [1, 9, 3]), method: ())
-(k: kindA, a: (x: "abc", z: [1, 10, 3]), method: ())
-(x: 123)
-(x: 123)
+  output: '''
+(k: kindA, a: (x: "abc", z: @[1, 1, 3]), method: ())
+(k: kindA, a: (x: "abc", z: @[1, 2, 3]), method: ())
+(k: kindA, a: (x: "abc", z: @[1, 3, 3]), method: ())
+(k: kindA, a: (x: "abc", z: @[1, 4, 3]), method: ())
+(k: kindA, a: (x: "abc", z: @[1, 5, 3]), method: ())
+(k: kindA, a: (x: "abc", z: @[1, 6, 3]), method: ())
+(k: kindA, a: (x: "abc", z: @[1, 7, 3]), method: ())
+(k: kindA, a: (x: "abc", z: @[1, 8, 3]), method: ())
+(k: kindA, a: (x: "abc", z: @[1, 9, 3]), method: ())
+(k: kindA, a: (x: "abc", z: @[1, 10, 3]), method: ())
+(y: 0, x: 123)
+(y: 678, x: 123)
 (z: 89, y: 0, x: 128)
 (y: 678, x: 123)
 (y: 678, x: 123)
 (y: 0, x: 123)
 (y: 678, x: 123)
-(y: 123, x: 678)'''
+(y: 123, x: 678)
+'''
 """
 
 type
@@ -31,14 +33,6 @@ type
     of kindA:
       a: TArg
       `method`: TEmpty # bug #1791
-
-proc `$`[T](s: seq[T]): string =
-  # XXX why is that not in the stdlib?
-  result = "["
-  for i, x in s:
-    if i > 0: result.add(", ")
-    result.add($x)
-  result.add("]")
 
 proc main() =
   for i in 1..10:
@@ -59,7 +53,7 @@ type
 # inherited fields are ignored, so no fields are set
 when true:
   var
-    o: A
+    o: B
   o = B(x: 123)
   echo o
   o = B(y: 678, x: 123)

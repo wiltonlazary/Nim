@@ -11,9 +11,11 @@
 #import vmdeps, vm
 from math import sqrt, ln, log10, log2, exp, round, arccos, arcsin,
   arctan, arctan2, cos, cosh, hypot, sinh, sin, tan, tanh, pow, trunc,
-  floor, ceil, fmod
+  floor, ceil, `mod`
 
-from os import getEnv, existsEnv, dirExists, fileExists, walkDir
+from os import getEnv, existsEnv, dirExists, fileExists, putEnv, walkDir, getAppFilename
+from md5 import getMD5
+from sighashes import symBodyDigest
 
 template mathop(op) {.dirty.} =
   registerCallback(c, "stdlib.math." & astToStr(op), `op Wrapper`)
@@ -21,11 +23,17 @@ template mathop(op) {.dirty.} =
 template osop(op) {.dirty.} =
   registerCallback(c, "stdlib.os." & astToStr(op), `op Wrapper`)
 
-template ospathsop(op) {.dirty.} =
-  registerCallback(c, "stdlib.ospaths." & astToStr(op), `op Wrapper`)
-
 template systemop(op) {.dirty.} =
   registerCallback(c, "stdlib.system." & astToStr(op), `op Wrapper`)
+
+template ioop(op) {.dirty.} =
+  registerCallback(c, "stdlib.io." & astToStr(op), `op Wrapper`)
+
+template macrosop(op) {.dirty.} =
+  registerCallback(c, "stdlib.macros." & astToStr(op), `op Wrapper`)
+
+template md5op(op) {.dirty.} =
+  registerCallback(c, "stdlib.md5." & astToStr(op), `op Wrapper`)
 
 template wrap1f_math(op) {.dirty.} =
   proc `op Wrapper`(a: VmArgs) {.nimcall.} =
@@ -37,30 +45,35 @@ template wrap2f_math(op) {.dirty.} =
     setResult(a, op(getFloat(a, 0), getFloat(a, 1)))
   mathop op
 
-template wrap1s_os(op) {.dirty.} =
+template wrap0(op, modop) {.dirty.} =
+  proc `op Wrapper`(a: VmArgs) {.nimcall.} =
+    setResult(a, op())
+  modop op
+
+template wrap1s(op, modop) {.dirty.} =
   proc `op Wrapper`(a: VmArgs) {.nimcall.} =
     setResult(a, op(getString(a, 0)))
-  osop op
+  modop op
 
-template wrap1s_ospaths(op) {.dirty.} =
-  proc `op Wrapper`(a: VmArgs) {.nimcall.} =
-    setResult(a, op(getString(a, 0)))
-  ospathsop op
-
-template wrap2s_ospaths(op) {.dirty.} =
+template wrap2s(op, modop) {.dirty.} =
   proc `op Wrapper`(a: VmArgs) {.nimcall.} =
     setResult(a, op(getString(a, 0), getString(a, 1)))
-  ospathsop op
+  modop op
 
-template wrap1s_system(op) {.dirty.} =
+template wrap2si(op, modop) {.dirty.} =
   proc `op Wrapper`(a: VmArgs) {.nimcall.} =
-    setResult(a, op(getString(a, 0)))
-  systemop op
+    setResult(a, op(getString(a, 0), getInt(a, 1)))
+  modop op
 
-template wrap2svoid_system(op) {.dirty.} =
+template wrap1svoid(op, modop) {.dirty.} =
+  proc `op Wrapper`(a: VmArgs) {.nimcall.} =
+    op(getString(a, 0))
+  modop op
+
+template wrap2svoid(op, modop) {.dirty.} =
   proc `op Wrapper`(a: VmArgs) {.nimcall.} =
     op(getString(a, 0), getString(a, 1))
-  systemop op
+  modop op
 
 proc getCurrentExceptionMsgWrapper(a: VmArgs) {.nimcall.} =
   setResult(a, if a.currentException.isNil: ""
@@ -69,15 +82,18 @@ proc getCurrentExceptionMsgWrapper(a: VmArgs) {.nimcall.} =
 proc staticWalkDirImpl(path: string, relative: bool): PNode =
   result = newNode(nkBracket)
   for k, f in walkDir(path, relative):
-    result.add newTree(nkPar, newIntNode(nkIntLit, k.ord),
+    result.add newTree(nkTupleConstr, newIntNode(nkIntLit, k.ord),
                               newStrNode(nkStrLit, f))
 
-proc gorgeExWrapper(a: VmArgs) {.nimcall.} =
-  let (s, e) = opGorge(getString(a, 0), getString(a, 1), getString(a, 2),
-                       a.currentLineInfo)
-  setResult a, newTree(nkPar, newStrNode(nkStrLit, s), newIntNode(nkIntLit, e))
-
 proc registerAdditionalOps*(c: PCtx) =
+  proc gorgeExWrapper(a: VmArgs) =
+    let (s, e) = opGorge(getString(a, 0), getString(a, 1), getString(a, 2),
+                         a.currentLineInfo, c.config)
+    setResult a, newTree(nkTupleConstr, newStrNode(nkStrLit, s), newIntNode(nkIntLit, e))
+
+  proc getProjectPathWrapper(a: VmArgs) =
+    setResult a, c.config.projectPath.string
+
   wrap1f_math(sqrt)
   wrap1f_math(ln)
   wrap1f_math(log10)
@@ -99,15 +115,32 @@ proc registerAdditionalOps*(c: PCtx) =
   wrap1f_math(trunc)
   wrap1f_math(floor)
   wrap1f_math(ceil)
-  wrap2f_math(fmod)
 
-  wrap2s_ospaths(getEnv)
-  wrap1s_ospaths(existsEnv)
-  wrap1s_os(dirExists)
-  wrap1s_os(fileExists)
-  wrap2svoid_system(writeFile)
-  wrap1s_system(readFile)
-  systemop getCurrentExceptionMsg
-  registerCallback c, "stdlib.*.staticWalkDir", proc (a: VmArgs) {.nimcall.} =
-    setResult(a, staticWalkDirImpl(getString(a, 0), getBool(a, 1)))
-  systemop gorgeEx
+  wrap1s(getMD5, md5op)
+
+  proc `mod Wrapper`(a: VmArgs) {.nimcall.} =
+    setResult(a, `mod`(getFloat(a, 0), getFloat(a, 1)))
+  registerCallback(c, "stdlib.math.mod", `mod Wrapper`)
+
+  when defined(nimcore):
+    wrap2s(getEnv, osop)
+    wrap1s(existsEnv, osop)
+    wrap2svoid(putEnv, osop)
+    wrap1s(dirExists, osop)
+    wrap1s(fileExists, osop)
+    wrap2svoid(writeFile, ioop)
+    wrap1s(readFile, ioop)
+    wrap2si(readLines, ioop)
+    systemop getCurrentExceptionMsg
+    registerCallback c, "stdlib.*.staticWalkDir", proc (a: VmArgs) {.nimcall.} =
+      setResult(a, staticWalkDirImpl(getString(a, 0), getBool(a, 1)))
+    systemop gorgeEx
+  macrosop getProjectPath
+
+  registerCallback c, "stdlib.os.getCurrentCompilerExe", proc (a: VmArgs) {.nimcall.} =
+    setResult(a, getAppFilename())
+
+  registerCallback c, "stdlib.macros.symBodyHash", proc (a: VmArgs) {.nimcall.} =
+    let n = getNode(a, 0)
+    if n.kind != nkSym: raise newException(ValueError, "node is not a symbol")
+    setResult(a, $symBodyDigest(c.graph, n.sym))

@@ -10,13 +10,14 @@
 ## This module contains the type definitions for the new evaluation engine.
 ## An instruction is 1-3 int32s in memory, it is a register based VM.
 
-import ast, passes, msgs, idents, intsets
+import ast, passes, msgs, idents, intsets, options, modulegraphs, lineinfos,
+  tables, btrees
 
 const
   byteExcess* = 128 # we use excess-K for immediates
   wordExcess* = 32768
 
-  MaxLoopIterations* = 1500_000 # max iterations of all loops
+  MaxLoopIterations* = 10_000_000 # max iterations of all loops
 
 
 type
@@ -34,8 +35,11 @@ type
     opcAsgnStr,
     opcAsgnFloat,
     opcAsgnRef,
+    opcAsgnIntFromFloat32,    # int and float must be of the same byte size
+    opcAsgnIntFromFloat64,    # int and float must be of the same byte size
+    opcAsgnFloat32FromInt,    # int and float must be of the same byte size
+    opcAsgnFloat64FromInt,    # int and float must be of the same byte size
     opcAsgnComplex,
-    opcRegToNode,
     opcNodeToReg,
 
     opcLdArr,  # a = b[c]
@@ -57,19 +61,21 @@ type
     opcLenStr,
 
     opcIncl, opcInclRange, opcExcl, opcCard, opcMulInt, opcDivInt, opcModInt,
-    opcAddFloat, opcSubFloat, opcMulFloat, opcDivFloat, opcShrInt, opcShlInt,
+    opcAddFloat, opcSubFloat, opcMulFloat, opcDivFloat,
+    opcShrInt, opcShlInt, opcAshrInt,
     opcBitandInt, opcBitorInt, opcBitxorInt, opcAddu, opcSubu, opcMulu,
     opcDivu, opcModu, opcEqInt, opcLeInt, opcLtInt, opcEqFloat,
     opcLeFloat, opcLtFloat, opcLeu, opcLtu,
-    opcEqRef, opcEqNimrodNode, opcSameNodeType,
+    opcEqRef, opcEqNimNode, opcSameNodeType,
     opcXor, opcNot, opcUnaryMinusInt, opcUnaryMinusFloat, opcBitnotInt,
     opcEqStr, opcLeStr, opcLtStr, opcEqSet, opcLeSet, opcLtSet,
     opcMulSet, opcPlusSet, opcMinusSet, opcSymdiffSet, opcConcatStr,
     opcContainsSet, opcRepr, opcSetLenStr, opcSetLenSeq,
     opcIsNil, opcOf, opcIs,
     opcSubStr, opcParseFloat, opcConv, opcCast,
-    opcQuit, opcReset,
+    opcQuit,
     opcNarrowS, opcNarrowU,
+    opcSignExtend,
 
     opcAddStrCh,
     opcAddStrStr,
@@ -79,16 +85,22 @@ type
     opcNAdd,
     opcNAddMultiple,
     opcNKind,
+    opcNSymKind,
     opcNIntVal,
     opcNFloatVal,
     opcNSymbol,
     opcNIdent,
     opcNGetType,
     opcNStrVal,
+    opcNSigHash,
+    opcNGetSize,
 
     opcNSetIntVal,
     opcNSetFloatVal, opcNSetSymbol, opcNSetIdent, opcNSetType, opcNSetStrVal,
     opcNNewNimNode, opcNCopyNimNode, opcNCopyNimTree, opcNDel, opcGenSym,
+
+    opcNccValue, opcNccInc, opcNcsAdd, opcNcsIncl, opcNcsLen, opcNcsAt,
+    opcNctPut, opcNctLen, opcNctGet, opcNctHasNext, opcNctNext,
 
     opcSlurp,
     opcGorge,
@@ -98,11 +110,11 @@ type
     opcNError,
     opcNWarning,
     opcNHint,
-    opcNGetLine, opcNGetColumn, opcNGetFile,
+    opcNGetLineInfo, opcNSetLineInfo,
     opcEqIdent,
     opcStrToIdent,
-    opcIdentToStr,
     opcGetImpl,
+    opcGetImplTransf
 
     opcEcho,
     opcIndCall, # dest = call regStart, n; where regStart = fn, arg1, ...
@@ -133,11 +145,12 @@ type
     opcLdGlobalAddr, # dest = addr(globals[Bx])
 
     opcLdImmInt,  # dest = immediate value
-    opcNBindSym,
+    opcNBindSym, opcNDynBindSym,
     opcSetType,   # dest.typ = types[Bx]
     opcTypeTrait,
     opcMarshalLoad, opcMarshalStore,
-    opcToNarrowInt
+    opcSymOwner,
+    opcSymIsInstantiationOf
 
   TBlock* = object
     label*: PSym
@@ -154,7 +167,6 @@ type
 
   TSandboxFlag* = enum        ## what the evaluation engine should allow
     allowCast,                ## allow unsafe language feature: 'cast'
-    allowFFI,                 ## allow the FFI
     allowInfiniteLoops        ## allow endless loops
   TSandboxFlags* = set[TSandboxFlag]
 
@@ -186,7 +198,7 @@ type
   VmCallback* = proc (args: VmArgs) {.closure.}
 
   PCtx* = ref TCtx
-  TCtx* = object of passes.TPassContext # code gen context
+  TCtx* = object of TPassContext # code gen context
     code*: seq[TInstr]
     debug*: seq[TLineInfo]  # line info for every instruction; kept separate
                             # to not slow down interpretation
@@ -206,24 +218,28 @@ type
     callbacks*: seq[tuple[key: string, value: VmCallback]]
     errorFlag*: string
     cache*: IdentCache
+    config*: ConfigRef
+    graph*: ModuleGraph
+    oldErrorCount*: int
 
   TPosition* = distinct int
 
   PEvalContext* = PCtx
 
-proc newCtx*(module: PSym; cache: IdentCache): PCtx =
+proc newCtx*(module: PSym; cache: IdentCache; g: ModuleGraph): PCtx =
   PCtx(code: @[], debug: @[],
     globals: newNode(nkStmtListExpr), constants: newNode(nkStmtList), types: @[],
     prc: PProc(blocks: @[]), module: module, loopIterations: MaxLoopIterations,
     comesFromHeuristic: unknownLineInfo(), callbacks: @[], errorFlag: "",
-    cache: cache)
+    cache: cache, config: g.config, graph: g)
 
 proc refresh*(c: PCtx, module: PSym) =
   c.module = module
   c.prc = PProc(blocks: @[])
   c.loopIterations = MaxLoopIterations
 
-proc registerCallback*(c: PCtx; name: string; callback: VmCallback) =
+proc registerCallback*(c: PCtx; name: string; callback: VmCallback): int {.discardable.} =
+  result = c.callbacks.len
   c.callbacks.add((name, callback))
 
 const

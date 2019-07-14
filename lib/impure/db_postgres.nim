@@ -14,7 +14,7 @@
 ## `db_mysql <db_mysql.html>`_.
 ##
 ## Parameter substitution
-## ----------------------
+## ======================
 ##
 ## All ``db_*`` modules support the same form of parameter substitution.
 ## That is, using the ``?`` (question mark) to signify the place where a
@@ -38,10 +38,10 @@
 ##           3)
 ##
 ## Examples
-## --------
+## ========
 ##
 ## Opening a connection to a database
-## ==================================
+## ----------------------------------
 ##
 ## .. code-block:: Nim
 ##     import db_postgres
@@ -49,7 +49,7 @@
 ##     db.close()
 ##
 ## Creating a table
-## ================
+## ----------------
 ##
 ## .. code-block:: Nim
 ##      db.exec(sql"DROP TABLE IF EXISTS myTable")
@@ -58,7 +58,7 @@
 ##                       name varchar(50) not null)"""))
 ##
 ## Inserting data
-## ==============
+## --------------
 ##
 ## .. code-block:: Nim
 ##     db.exec(sql"INSERT INTO myTable (id, name) VALUES (0, ?)",
@@ -76,7 +76,6 @@ type
     res: PPGresult     ## used to get a row's
     line: int          ## column text on demand
   SqlPrepared* = distinct string ## a identifier for the prepared queries
-{.deprecated: [TRow: Row, TDbConn: DbConn, TSqlPrepared: SqlPrepared].}
 
 proc dbError*(db: DbConn) {.noreturn.} =
   ## raises a DbError exception.
@@ -103,10 +102,7 @@ proc dbFormat(formatstr: SqlQuery, args: varargs[string]): string =
   else:
     for c in items(string(formatstr)):
       if c == '?':
-        if args[a] == nil:
-          add(result, "NULL")
-        else:
-          add(result, dbQuote(args[a]))
+        add(result, dbQuote(args[a]))
         inc(a)
       else:
         add(result, c)
@@ -179,7 +175,7 @@ proc setRow(res: PPGresult, r: var Row, line, cols: int32) =
     setLen(r[col], 0)
     let x = pqgetvalue(res, line, col)
     if x.isNil:
-      r[col] = nil
+      r[col] = ""
     else:
       add(r[col], x)
 
@@ -384,6 +380,10 @@ iterator instantRows*(db: DbConn; columns: var DbColumns; query: SqlQuery;
 proc `[]`*(row: InstantRow; col: int): string {.inline.} =
   ## returns text for given column of the row
   $pqgetvalue(row.res, int32(row.line), int32(col))
+
+proc unsafeColumnAt*(row: InstantRow, index: int): cstring {.inline.} =
+  ## Return cstring of given column of the row
+  pqgetvalue(row.res, int32(row.line), int32(index))
 
 proc len*(row: InstantRow): int {.inline.} =
   ## returns number of columns in the row

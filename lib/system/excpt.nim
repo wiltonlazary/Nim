@@ -14,24 +14,34 @@ var
   errorMessageWriter*: (proc(msg: string) {.tags: [WriteIOEffect], benign,
                                             nimcall.})
     ## Function that will be called
-    ## instead of stdmsg.write when printing stacktrace.
+    ## instead of `stdmsg.write` when printing stacktrace.
     ## Unstable API.
 
 when not defined(windows) or not defined(guiapp):
-  proc writeToStdErr(msg: cstring) = write(stdmsg, msg)
+  proc writeToStdErr(msg: cstring) = rawWrite(cstderr, msg)
 
 else:
-  proc MessageBoxA(hWnd: cint, lpText, lpCaption: cstring, uType: int): int32 {.
+  proc MessageBoxA(hWnd: pointer, lpText, lpCaption: cstring, uType: int): int32 {.
     header: "<windows.h>", nodecl.}
 
   proc writeToStdErr(msg: cstring) =
-    discard MessageBoxA(0, msg, nil, 0)
+    discard MessageBoxA(nil, msg, nil, 0)
 
 proc showErrorMessage(data: cstring) {.gcsafe.} =
   if errorMessageWriter != nil:
     errorMessageWriter($data)
   else:
-    writeToStdErr(data)
+    when defined(genode):
+      # stderr not available by default, use the LOG session
+      echo data
+    else:
+      writeToStdErr(data)
+
+proc quitOrDebug() {.inline.} =
+  when defined(endb):
+    endbStep() # call the debugger
+  else:
+    quit(1)
 
 proc chckIndx(i, a, b: int): int {.inline, compilerproc, benign.}
 proc chckRange(i, a, b: int): int {.inline, compilerproc, benign.}
@@ -50,6 +60,8 @@ var
     # list of exception handlers
     # a global variable for the root of all try blocks
   currException {.threadvar.}: ref Exception
+  raiseCounter {.threadvar.}: uint
+
   gcFramePtr {.threadvar.}: GcFrame
 
 type
@@ -107,6 +119,25 @@ proc pushCurrentException(e: ref Exception) {.compilerRtl, inl.} =
 
 proc popCurrentException {.compilerRtl, inl.} =
   currException = currException.up
+
+proc popCurrentExceptionEx(id: uint) {.compilerRtl.} =
+  # in cpp backend exceptions can pop-up in the different order they were raised, example #5628
+  if currException.raiseId == id:
+    currException = currException.up
+  else:
+    var cur = currException.up
+    var prev = currException
+    while cur != nil and cur.raiseId != id:
+      prev = cur
+      cur = cur.up
+    if cur == nil:
+      showErrorMessage("popCurrentExceptionEx() exception was not found in the exception stack. Aborting...")
+      quitOrDebug()
+    prev.up = cur.up
+
+proc closureIterSetupExc(e: ref Exception) {.compilerproc, inline.} =
+  if not e.isNil:
+    currException = e
 
 # some platforms have native support for stack traces:
 const
@@ -182,11 +213,12 @@ proc auxWriteStackTrace(f: PFrame; s: var seq[StackTraceEntry]) =
     inc(i)
     it = it.prev
   var last = i-1
-  if s.isNil:
-    s = newSeq[StackTraceEntry](i)
-  else:
-    last = s.len + i - 1
-    s.setLen(last+1)
+  when true: # not defined(gcDestructors):
+    if s.len == 0:
+      s = newSeq[StackTraceEntry](i)
+    else:
+      last = s.len + i - 1
+      s.setLen(last+1)
   it = f
   while it != nil:
     s[last] = StackTraceEntry(procname: it.procname,
@@ -276,7 +308,7 @@ when hasSomeStackTrace:
     when NimStackTrace:
       auxWriteStackTrace(framePtr, s)
     else:
-      s = nil
+      s = @[]
 
   proc stackTraceAvailable(): bool =
     when NimStackTrace:
@@ -291,15 +323,10 @@ when hasSomeStackTrace:
 else:
   proc stackTraceAvailable*(): bool = result = false
 
-proc quitOrDebug() {.inline.} =
-  when not defined(endb):
-    quit(1)
-  else:
-    endbStep() # call the debugger
-
 var onUnhandledException*: (proc (errorMsg: string) {.
-  nimcall.}) ## set this error \
+  nimcall.}) ## Set this error \
   ## handler to override the existing behaviour on an unhandled exception.
+  ##
   ## The default is to write a stacktrace to ``stderr`` and then call ``quit(1)``.
   ## Unstable API.
 
@@ -315,27 +342,26 @@ proc raiseExceptionAux(e: ref Exception) =
   if globalRaiseHook != nil:
     if not globalRaiseHook(e): return
   when defined(cpp) and not defined(noCppExceptions):
-    if e[] of OutOfMemError:
-      showErrorMessage(e.name)
-      quitOrDebug()
-    else:
-      pushCurrentException(e)
-      {.emit: "throw NimException(`e`, `e`->name);".}
+    pushCurrentException(e)
+    raiseCounter.inc
+    if raiseCounter == 0:
+      raiseCounter.inc # skip zero at overflow
+    e.raiseId = raiseCounter
+    {.emit: "`e`->raise();".}
+  elif defined(nimQuirky):
+    pushCurrentException(e)
   else:
     if excHandler != nil:
       if not excHandler.hasRaiseAction or excHandler.raiseAction(e):
         pushCurrentException(e)
         c_longjmp(excHandler.context, 1)
-    elif e[] of OutOfMemError:
-      showErrorMessage(e.name)
-      quitOrDebug()
     else:
       when hasSomeStackTrace:
         var buf = newStringOfCap(2000)
-        if isNil(e.trace): rawWriteStackTrace(buf)
+        if e.trace.len == 0: rawWriteStackTrace(buf)
         else: add(buf, $e.trace)
         add(buf, "Error: unhandled exception: ")
-        if not isNil(e.msg): add(buf, e.msg)
+        add(buf, e.msg)
         add(buf, " [")
         add(buf, $e.name)
         add(buf, "]\n")
@@ -352,8 +378,10 @@ proc raiseExceptionAux(e: ref Exception) =
           xadd(buf, s, s.len)
         var buf: array[0..2000, char]
         var L = 0
+        if e.trace.len != 0:
+          add(buf, $e.trace) # gc allocation
         add(buf, "Error: unhandled exception: ")
-        if not isNil(e.msg): add(buf, e.msg)
+        add(buf, e.msg)
         add(buf, " [")
         xadd(buf, e.name, e.name.len)
         add(buf, "]\n")
@@ -365,16 +393,22 @@ proc raiseExceptionAux(e: ref Exception) =
           showErrorMessage(tbuf())
           quitOrDebug()
 
-proc raiseException(e: ref Exception, ename: cstring) {.compilerRtl.} =
+proc raiseExceptionEx(e: ref Exception, ename, procname, filename: cstring, line: int) {.compilerRtl.} =
   if e.name.isNil: e.name = ename
   when hasSomeStackTrace:
-    if e.trace.isNil:
+    if e.trace.len == 0:
       rawWriteStackTrace(e.trace)
     elif framePtr != nil:
       e.trace.add reraisedFrom(reraisedFromBegin)
       auxWriteStackTrace(framePtr, e.trace)
       e.trace.add reraisedFrom(reraisedFromEnd)
+  else:
+    if procname != nil and filename != nil:
+      e.trace.add StackTraceEntry(procname: procname, filename: filename, line: line)
   raiseExceptionAux(e)
+
+proc raiseException(e: ref Exception, ename: cstring) {.compilerRtl.} =
+  raiseExceptionEx(e, ename, nil, nil, 0)
 
 proc reraiseException() {.compilerRtl.} =
   if currException == nil:
@@ -386,9 +420,9 @@ proc writeStackTrace() =
   when hasSomeStackTrace:
     var s = ""
     rawWriteStackTrace(s)
-    showErrorMessage(s)
+    cast[proc (s: cstring) {.noSideEffect, tags: [], nimcall.}](showErrorMessage)(s)
   else:
-    showErrorMessage("No stack traceback available\n")
+    cast[proc (s: cstring) {.noSideEffect, tags: [], nimcall.}](showErrorMessage)("No stack traceback available\n")
 
 proc getStackTrace(): string =
   when hasSomeStackTrace:
@@ -398,7 +432,7 @@ proc getStackTrace(): string =
     result = "No stack traceback available\n"
 
 proc getStackTrace(e: ref Exception): string =
-  if not isNil(e) and not isNil(e.trace):
+  if not isNil(e):
     result = $e.trace
   else:
     result = ""
@@ -406,28 +440,71 @@ proc getStackTrace(e: ref Exception): string =
 proc getStackTraceEntries*(e: ref Exception): seq[StackTraceEntry] =
   ## Returns the attached stack trace to the exception ``e`` as
   ## a ``seq``. This is not yet available for the JS backend.
-  shallowCopy(result, e.trace)
+  when not defined(gcDestructors):
+    shallowCopy(result, e.trace)
+  else:
+    result = move(e.trace)
 
-when defined(nimRequiresNimFrame):
-  proc stackOverflow() {.noinline.} =
-    writeStackTrace()
-    showErrorMessage("Stack overflow\n")
-    quitOrDebug()
+proc getStackTraceEntries*(): seq[StackTraceEntry] =
+  ## Returns the stack trace entries for the current stack trace.
+  ## This is not yet available for the JS backend.
+  when hasSomeStackTrace:
+    rawWriteStackTrace(result)
 
-  proc nimFrame(s: PFrame) {.compilerRtl, inl, exportc: "nimFrame".} =
-    s.calldepth = if framePtr == nil: 0 else: framePtr.calldepth+1
-    s.prev = framePtr
-    framePtr = s
-    if s.calldepth == 2000: stackOverflow()
-else:
-  proc pushFrame(s: PFrame) {.compilerRtl, inl, exportc: "nimFrame".} =
-    # XXX only for backwards compatibility
-    s.prev = framePtr
-    framePtr = s
+const nimCallDepthLimit {.intdefine.} = 2000
+
+proc callDepthLimitReached() {.noinline.} =
+  writeStackTrace()
+  showErrorMessage("Error: call depth limit reached in a debug build (" &
+      $nimCallDepthLimit & " function calls). You can change it with " &
+      "-d:nimCallDepthLimit=<int> but really try to avoid deep " &
+      "recursions instead.\n")
+  quitOrDebug()
+
+proc nimFrame(s: PFrame) {.compilerRtl, inl.} =
+  s.calldepth = if framePtr == nil: 0 else: framePtr.calldepth+1
+  s.prev = framePtr
+  framePtr = s
+  if s.calldepth == nimCallDepthLimit: callDepthLimitReached()
 
 when defined(endb):
   var
     dbgAborting: bool # whether the debugger wants to abort
+
+when defined(cpp) and appType != "lib" and
+    not defined(js) and not defined(nimscript) and
+    hostOS != "standalone" and not defined(noCppExceptions):
+
+  type
+    StdException {.importcpp: "std::exception", header: "<exception>".} = object
+
+  proc what(ex: StdException): cstring {.importcpp: "((char *)#.what())".}
+
+  proc setTerminate(handler: proc() {.noconv.})
+    {.importc: "std::set_terminate", header: "<exception>".}
+
+  setTerminate proc() {.noconv.} =
+    # Remove ourself as a handler, reinstalling the default handler.
+    setTerminate(nil)
+
+    var msg = "Unknown error in unexpected exception handler"
+    try:
+      raise
+    except Exception:
+      msg = currException.getStackTrace() & "Error: unhandled exception: " &
+        currException.msg & " [" & $currException.name & "]"
+    except StdException as e:
+      msg = "Error: unhandled cpp exception: " & $e.what()
+    except:
+      msg = "Error: unhandled unknown cpp exception"
+
+    when defined(genode):
+      # stderr not available by default, use the LOG session
+      echo msg
+    else:
+      writeToStdErr msg & "\n"
+
+    quit 1
 
 when not defined(noSignalHandler) and not defined(useNimRtl):
   proc signalHandler(sign: cint) {.exportc: "signalHandler", noconv.} =
@@ -441,7 +518,7 @@ when not defined(noSignalHandler) and not defined(useNimRtl):
         action("SIGABRT: Abnormal termination.\n")
       elif s == SIGFPE: action("SIGFPE: Arithmetic error.\n")
       elif s == SIGILL: action("SIGILL: Illegal operation.\n")
-      elif s == SIGBUS:
+      elif (when declared(SIGBUS): s == SIGBUS else: false):
         action("SIGBUS: Illegal storage access. (Attempt to read from nil?)\n")
       else:
         block platformSpecificSignal:
@@ -476,13 +553,19 @@ when not defined(noSignalHandler) and not defined(useNimRtl):
     c_signal(SIGABRT, signalHandler)
     c_signal(SIGFPE, signalHandler)
     c_signal(SIGILL, signalHandler)
-    c_signal(SIGBUS, signalHandler)
+    when declared(SIGBUS):
+      c_signal(SIGBUS, signalHandler)
     when declared(SIGPIPE):
       c_signal(SIGPIPE, signalHandler)
 
   registerSignalHandler() # call it in initialization section
 
-proc setControlCHook(hook: proc () {.noconv.} not nil) =
+proc setControlCHook(hook: proc () {.noconv.}) =
   # ugly cast, but should work on all architectures:
   type SignalHandler = proc (sign: cint) {.noconv, benign.}
   c_signal(SIGINT, cast[SignalHandler](hook))
+
+when not defined(noSignalHandler) and not defined(useNimRtl):
+  proc unsetControlCHook() =
+    # proc to unset a hook set by setControlCHook
+    c_signal(SIGINT, signalHandler)

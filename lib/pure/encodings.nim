@@ -27,8 +27,6 @@ type
   EncodingError* = object of ValueError ## exception that is raised
                                         ## for encoding errors
 
-{.deprecated: [EInvalidEncoding: EncodingError, PConverter: EncodingConverter].}
-
 when defined(windows):
   proc eqEncodingNames(a, b: string): bool =
     var i = 0
@@ -36,7 +34,7 @@ when defined(windows):
     while i < a.len and j < b.len:
       if a[i] in {'-', '_'}: inc i
       if b[j] in {'-', '_'}: inc j
-      if a[i].toLower != b[j].toLower: return false
+      if i < a.len and j < b.len and a[i].toLowerAscii != b[j].toLowerAscii: return false
       inc i
       inc j
     result = i == a.len and j == b.len
@@ -215,19 +213,18 @@ when defined(windows):
         maxCharSize: int32
         defaultChar: array[0..1, char]
         leadByte: array[0..12-1, char]
-    {.deprecated: [TCpInfo: CpInfo].}
 
     proc getCPInfo(codePage: CodePage, lpCPInfo: var CpInfo): int32 {.
       stdcall, importc: "GetCPInfo", dynlib: "kernel32".}
 
-  proc nameToCodePage(name: string): CodePage =
+  proc nameToCodePage*(name: string): CodePage =
     var nameAsInt: int
     if parseInt(name, nameAsInt) == 0: nameAsInt = -1
     for no, na in items(winEncodings):
       if no == nameAsInt or eqEncodingNames(na, name): return CodePage(no)
     result = CodePage(-1)
 
-  proc codePageToName(c: CodePage): string =
+  proc codePageToName*(c: CodePage): string =
     for no, na in items(winEncodings):
       if no == int(c):
         return if na.len != 0: na else: $no
@@ -257,7 +254,7 @@ when defined(windows):
 
 else:
   when defined(haiku):
-    const iconvDll = "(libc.so.6|libiconv.so|libtextencoding.so)"
+    const iconvDll = "libiconv.so"
   elif defined(macosx):
     const iconvDll = "libiconv.dylib"
   else:
@@ -274,6 +271,8 @@ else:
     const EILSEQ = 86.cint
   elif defined(solaris):
     const EILSEQ = 88.cint
+  elif defined(haiku):
+    const EILSEQ = -2147454938.cint
 
   var errno {.importc, header: "<errno.h>".}: cint
 
@@ -302,7 +301,7 @@ proc getCurrentEncoding*(): string =
 
 proc open*(destEncoding = "UTF-8", srcEncoding = "CP1252"): EncodingConverter =
   ## opens a converter that can convert from `srcEncoding` to `destEncoding`.
-  ## Raises `EIO` if it cannot fulfill the request.
+  ## Raises `IOError` if it cannot fulfill the request.
   when not defined(windows):
     result = iconvOpen(destEncoding, srcEncoding)
     if result == nil:
@@ -334,7 +333,7 @@ when defined(windows):
     if s.len == 0: return ""
     # educated guess of capacity:
     var cap = s.len + s.len shr 2
-    result = newStringOfCap(cap*2)
+    result = newString(cap*2)
     # convert to utf-16 LE
     var m = multiByteToWideChar(codePage = c.src, dwFlags = 0'i32,
                                 lpMultiByteStr = cstring(s),
@@ -349,7 +348,7 @@ when defined(windows):
                                 lpWideCharStr = nil,
                                 cchWideChar = cint(0))
       # and do the conversion properly:
-      result = newStringOfCap(cap*2)
+      result = newString(cap*2)
       m = multiByteToWideChar(codePage = c.src, dwFlags = 0'i32,
                               lpMultiByteStr = cstring(s),
                               cbMultiByte = cint(s.len),
@@ -366,7 +365,7 @@ when defined(windows):
     if int(c.dest) == 1200: return
     # otherwise the fun starts again:
     cap = s.len + s.len shr 2
-    var res = newStringOfCap(cap)
+    var res = newString(cap)
     m = wideCharToMultiByte(
       codePage = c.dest,
       dwFlags = 0'i32,
@@ -384,7 +383,7 @@ when defined(windows):
         lpMultiByteStr = nil,
         cbMultiByte = cint(0))
       # and do the conversion properly:
-      res = newStringOfCap(cap)
+      res = newString(cap)
       m = wideCharToMultiByte(
         codePage = c.dest,
         dwFlags = 0'i32,

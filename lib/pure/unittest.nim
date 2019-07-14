@@ -57,8 +57,8 @@
 ##   # Run suites starting with 'bug #' and standalone tests starting with '#'
 ##   nim c -r test 'bug #*::' '::#*'
 ##
-## Example
-## -------
+## Examples
+## ========
 ##
 ## .. code:: nim
 ##
@@ -121,9 +121,16 @@ type
   ConsoleOutputFormatter* = ref object of OutputFormatter
     colorOutput: bool
       ## Have test results printed in color.
-      ## Default is true for the non-js target
-      ## unless, the environment variable
-      ## ``NIMTEST_NO_COLOR`` is set.
+      ## Default is true for the non-js target,
+      ## for which ``stdout`` is a tty.
+      ## Setting the environment variable
+      ## ``NIMTEST_COLOR`` to ``always`` or
+      ## ``never`` changes the default for the
+      ## non-js target to true or false respectively.
+      ## The deprecated environment variable
+      ## ``NIMTEST_NO_COLOR``, when set,
+      ## changes the defualt to true, if
+      ## ``NIMTEST_COLOR`` is undefined.
     outputLevel: OutputLevel
       ## Set the verbosity of test results.
       ## Default is ``PRINT_ALL``, unless
@@ -138,8 +145,6 @@ type
     testStartTime: float
     testStackTrace: string
 
-{.deprecated: [TTestStatus: TestStatus, TOutputLevel: OutputLevel]}
-
 var
   abortOnError* {.threadvar.}: bool ## Set to true in order to quit
                                     ## immediately on fail. Default is false,
@@ -150,6 +155,7 @@ var
   checkpoints {.threadvar.}: seq[string]
   formatters {.threadvar.}: seq[OutputFormatter]
   testsFilters {.threadvar.}: HashSet[string]
+  disabledParamFiltering {.threadvar.}: bool
 
 when declared(stdout):
   abortOnError = existsEnv("NIMTEST_ABORT_ON_ERROR")
@@ -168,24 +174,29 @@ method suiteEnded*(formatter: OutputFormatter) {.base, gcsafe.} =
   discard
 
 proc addOutputFormatter*(formatter: OutputFormatter) =
-  if formatters == nil:
-    formatters = @[formatter]
-  else:
-    formatters.add(formatter)
+  formatters.add(formatter)
 
 proc newConsoleOutputFormatter*(outputLevel: OutputLevel = PRINT_ALL,
-                                colorOutput = true): ConsoleOutputFormatter =
+                                colorOutput = true): <//>ConsoleOutputFormatter =
   ConsoleOutputFormatter(
     outputLevel: outputLevel,
     colorOutput: colorOutput
   )
 
-proc defaultConsoleFormatter*(): ConsoleOutputFormatter =
+proc defaultConsoleFormatter*(): <//>ConsoleOutputFormatter =
   when declared(stdout):
     # Reading settings
     # On a terminal this branch is executed
     var envOutLvl = os.getEnv("NIMTEST_OUTPUT_LVL").string
-    var colorOutput  = not existsEnv("NIMTEST_NO_COLOR")
+    var colorOutput  = isatty(stdout)
+    if existsEnv("NIMTEST_COLOR"):
+      let colorEnv = getenv("NIMTEST_COLOR")
+      if colorEnv == "never":
+        colorOutput = false
+      elif colorEnv == "always":
+        colorOutput = true
+    elif existsEnv("NIMTEST_NO_COLOR"):
+      colorOutput = false
     var outputLevel = PRINT_ALL
     if envOutLvl.len > 0:
       for opt in countup(low(OutputLevel), high(OutputLevel)):
@@ -209,7 +220,7 @@ method testStarted*(formatter: ConsoleOutputFormatter, testName: string) =
   formatter.isInTest = true
 
 method failureOccurred*(formatter: ConsoleOutputFormatter, checkpoints: seq[string], stackTrace: string) =
-  if stackTrace != nil:
+  if stackTrace.len > 0:
     echo stackTrace
   let prefix = if formatter.isInSuite: "    " else: ""
   for msg in items(checkpoints):
@@ -220,7 +231,7 @@ method testEnded*(formatter: ConsoleOutputFormatter, testResult: TestResult) =
 
   if formatter.outputLevel != PRINT_NONE and
      (formatter.outputLevel == PRINT_ALL or testResult.status == FAILED):
-    let prefix = if testResult.suiteName != nil: "  " else: ""
+    let prefix = if testResult.suiteName.len > 0: "  " else: ""
     template rawPrint() = echo(prefix, "[", $testResult.status, "] ", testResult.testName)
     when not defined(ECMAScript):
       if formatter.colorOutput and not defined(ECMAScript):
@@ -228,7 +239,6 @@ method testEnded*(formatter: ConsoleOutputFormatter, testResult: TestResult) =
                     of OK: fgGreen
                     of FAILED: fgRed
                     of SKIPPED: fgYellow
-                    else: fgWhite
         styledEcho styleBright, color, prefix, "[", $testResult.status, "] ", resetStyle, testResult.testName
       else:
         rawPrint()
@@ -253,7 +263,7 @@ proc xmlEscape(s: string): string =
       else:
         result.add(c)
 
-proc newJUnitOutputFormatter*(stream: Stream): JUnitOutputFormatter =
+proc newJUnitOutputFormatter*(stream: Stream): <//>JUnitOutputFormatter =
   ## Creates a formatter that writes report to the specified stream in
   ## JUnit format.
   ## The ``stream`` is NOT closed automatically when the test are finished,
@@ -285,7 +295,7 @@ method failureOccurred*(formatter: JUnitOutputFormatter, checkpoints: seq[string
   ## ``stackTrace`` is provided only if the failure occurred due to an exception.
   ## ``checkpoints`` is never ``nil``.
   formatter.testErrors.add(checkpoints)
-  if stackTrace != nil:
+  if stackTrace.len > 0:
     formatter.testStackTrace = stackTrace
 
 method testEnded*(formatter: JUnitOutputFormatter, testResult: TestResult) =
@@ -376,10 +386,10 @@ proc shouldRun(currentSuiteName, testName: string): bool =
   return false
 
 proc ensureInitialized() =
-  if formatters == nil:
+  if formatters.len == 0:
     formatters = @[OutputFormatter(defaultConsoleFormatter())]
 
-  if not testsFilters.isValid:
+  if not disabledParamFiltering and not testsFilters.isValid:
     testsFilters.init()
     when declared(paramCount):
       # Read tests to run from the command line.
@@ -446,6 +456,8 @@ template suite*(name, body) {.dirty.} =
     finally:
       suiteEnded()
 
+template exceptionTypeName(e: typed): string = $e.name
+
 template test*(name, body) {.dirty.} =
   ## Define a single test case identified by `name`.
   ##
@@ -460,7 +472,7 @@ template test*(name, body) {.dirty.} =
   ## .. code-block::
   ##
   ##  [OK] roses are red
-  bind shouldRun, checkpoints, formatters, ensureInitialized, testEnded
+  bind shouldRun, checkpoints, formatters, ensureInitialized, testEnded, exceptionTypeName
 
   ensureInitialized()
 
@@ -479,15 +491,17 @@ template test*(name, body) {.dirty.} =
 
     except:
       when not defined(js):
-        checkpoint("Unhandled exception: " & getCurrentExceptionMsg())
-        var stackTrace {.inject.} = getCurrentException().getStackTrace()
+        let e = getCurrentException()
+        let eTypeDesc = "[" & exceptionTypeName(e) & "]"
+        checkpoint("Unhandled exception: " & getCurrentExceptionMsg() & " " & eTypeDesc)
+        var stackTrace {.inject.} = e.getStackTrace()
       fail()
 
     finally:
       if testStatusIMPL == FAILED:
-        programResult += 1
+        programResult = 1
       let testResult = TestResult(
-        suiteName: when declared(testSuiteName): testSuiteName else: nil,
+        suiteName: when declared(testSuiteName): testSuiteName else: "",
         testName: name,
         status: testStatusIMPL
       )
@@ -505,8 +519,6 @@ proc checkpoint*(msg: string) =
   ##  checkpoint("Checkpoint B")
   ##
   ## outputs "Checkpoint A" once it fails.
-  if checkpoints == nil:
-    checkpoints = @[]
   checkpoints.add(msg)
   # TODO: add support for something like SCOPED_TRACE from Google Test
 
@@ -528,7 +540,7 @@ template fail* =
   when declared(testStatusIMPL):
     testStatusIMPL = FAILED
   else:
-    programResult += 1
+    programResult = 1
 
   ensureInitialized()
 
@@ -537,9 +549,9 @@ template fail* =
     when declared(stackTrace):
       formatter.failureOccurred(checkpoints, stackTrace)
     else:
-      formatter.failureOccurred(checkpoints, nil)
+      formatter.failureOccurred(checkpoints, "")
 
-  when not defined(ECMAScript):
+  when declared(programResult):
     if abortOnError: quit(programResult)
 
   checkpoints = @[]
@@ -701,3 +713,7 @@ macro expect*(exceptions: varargs[typed], body: untyped): untyped =
     errorTypes.add(exp[i])
 
   result = getAst(expectBody(errorTypes, exp.lineinfo, body))
+
+proc disableParamFiltering* =
+  ## disables filtering tests with the command line params
+  disabledParamFiltering = true

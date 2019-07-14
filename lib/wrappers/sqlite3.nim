@@ -7,7 +7,11 @@
 #    distribution, for details about the copyright.
 #
 
-{.deadCodeElim: on.}
+{.deadCodeElim: on.}  # dce option deprecated
+
+when defined(nimHasStyleChecks):
+  {.push styleChecks: off.}
+
 when defined(windows):
   when defined(nimOldDlls):
     const Lib = "sqlite3.dll"
@@ -121,12 +125,6 @@ type
                                   para4: int32, para5: pointer): int32{.cdecl.}
   Collation_needed_func* = proc (para1: pointer, para2: PSqlite3, eTextRep: int32,
                                   para4: cstring){.cdecl.}
-{.deprecated: [TSqlite3: Sqlite3, TContext: Context, Tvalue: Value,
-    Tcallback: Callback, Tcreate_function_step_func: Create_function_step_func,
-    Tcreate_function_func_func: Create_function_func_func,
-    Tcreate_function_final_func: Create_function_final_func,
-    Tresult_func: Result_func, Tcreate_collation_func: Create_collation_func,
-    Tcollation_needed_func: Collation_needed_func].}
 
 const
   SQLITE_STATIC* = nil
@@ -368,3 +366,6 @@ proc libversion_number*(): int32{.cdecl, dynlib: Lib,
   #function sqlite3_expired(_para1:Psqlite3_stmt):longint;cdecl; external Sqlite3Lib name 'sqlite3_expired';
   #function sqlite3_global_recover:longint;cdecl; external Sqlite3Lib name 'sqlite3_global_recover';
 # implementation
+
+when defined(nimHasStyleChecks):
+  {.pop.}
