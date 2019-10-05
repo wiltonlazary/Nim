@@ -7,7 +7,7 @@
 #    distribution, for details about the copyright.
 #
 
-import ast, types, msgs, os, streams, options, idents, lineinfos
+import ast, types, msgs, os, options, idents, lineinfos
 
 proc opSlurp*(file: string, info: TLineInfo, module: PSym; conf: ConfigRef): string =
   try:
@@ -242,7 +242,7 @@ proc mapTypeToAstX(cache: IdentCache; t: PType; info: TLineInfo;
   of tyRange:
     result = newNodeIT(nkBracketExpr, if t.n.isNil: info else: t.n.info, t)
     result.add atomicType("range", mRange)
-    if inst:
+    if inst and t.n.len == 2:
       let rng = newNodeX(nkInfix)
       rng.add newIdentNode(getIdent(cache, ".."), info)
       rng.add t.n.sons[0].copyTree
@@ -250,7 +250,8 @@ proc mapTypeToAstX(cache: IdentCache; t: PType; info: TLineInfo;
       result.add rng
     else:
       result.add t.n.sons[0].copyTree
-      result.add t.n.sons[1].copyTree
+      if t.n.len > 1:
+        result.add t.n.sons[1].copyTree
   of tyPointer: result = atomicType("pointer", mPointer)
   of tyString: result = atomicType("string", mString)
   of tyCString: result = atomicType("cstring", mCstring)

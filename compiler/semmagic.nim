@@ -141,6 +141,14 @@ proc evalTypeTrait(c: PContext; traitCall: PNode, operand: PType, context: PSym)
     return typeWithSonsResult(tyAnd, @[operand, operand2])
   of "not":
     return typeWithSonsResult(tyNot, @[operand])
+  of "typeToString":
+    var prefer = preferTypeName
+    if traitCall.sons.len >= 2:
+      let preferStr = traitCall.sons[2].strVal
+      prefer = parseEnum[TPreferedDesc](preferStr)
+    result = newStrNode(nkStrLit, operand.typeToString(prefer))
+    result.typ = newType(tyString, context)
+    result.info = traitCall.info
   of "name", "$":
     result = newStrNode(nkStrLit, operand.typeToString(preferTypeName))
     result.typ = newType(tyString, context)
@@ -172,7 +180,7 @@ proc semTypeTraits(c: PContext, n: PNode): PNode =
   checkMinSonsLen(n, 2, c.config)
   let t = n.sons[1].typ
   internalAssert c.config, t != nil and t.kind == tyTypeDesc
-  if t.sonsLen > 0:
+  if t.len > 0:
     # This is either a type known to sem or a typedesc
     # param to a regular proc (again, known at instantiation)
     result = evalTypeTrait(c, n, t, getCurrOwner(c))
@@ -186,7 +194,9 @@ proc semOrd(c: PContext, n: PNode): PNode =
   if isOrdinalType(parType, allowEnumWithHoles=true):
     discard
   elif parType.kind == tySet:
-    result.typ = makeRangeType(c, firstOrd(c.config, parType), lastOrd(c.config, parType), n.info)
+    let a = toInt64(firstOrd(c.config, parType))
+    let b = toInt64(lastOrd(c.config, parType))
+    result.typ = makeRangeType(c, a, b, n.info)
   else:
     localError(c.config, n.info, errOrdinalTypeExpected)
     result.typ = errorType(c)
@@ -269,11 +279,11 @@ proc semDynamicBindSym(c: PContext, n: PNode): PNode =
     a.setResult opBindSym(c, scope, a.getNode(0), a.getInt(1).int, a.getNode(2))
 
   let
-    # altough we use VM callback here, it is not
+    # although we use VM callback here, it is not
     # executed like 'normal' VM callback
     idx = vm.registerCallback("bindSymImpl", bindSymWrapper)
     # dummy node to carry idx information to VM
-    idxNode = newIntTypeNode(nkIntLit, idx, c.graph.getSysType(TLineInfo(), tyInt))
+    idxNode = newIntTypeNode(idx, c.graph.getSysType(TLineInfo(), tyInt))
 
   result = copyNode(n)
   for x in n: result.add x
@@ -283,7 +293,7 @@ proc semDynamicBindSym(c: PContext, n: PNode): PNode =
 proc semShallowCopy(c: PContext, n: PNode, flags: TExprFlags): PNode
 
 proc semOf(c: PContext, n: PNode): PNode =
-  if sonsLen(n) == 3:
+  if len(n) == 3:
     n.sons[1] = semExprWithType(c, n.sons[1])
     n.sons[2] = semExprWithType(c, n.sons[2], {efDetermineType})
     #restoreOldStyleType(n.sons[1])

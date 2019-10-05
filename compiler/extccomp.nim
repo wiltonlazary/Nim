@@ -404,7 +404,7 @@ proc getConfigVar(conf: ConfigRef; c: TSystemCC, suffix: string): string =
                      CC[c].name & fullSuffix
     result = getConfigVar(conf, fullCCname)
     if result.len == 0:
-      # not overriden for this cross compilation setting?
+      # not overridden for this cross compilation setting?
       result = getConfigVar(conf, CC[c].name & fullSuffix)
   else:
     result = getConfigVar(conf, CC[c].name & fullSuffix)
@@ -757,7 +757,7 @@ proc getLinkCmd(conf: ConfigRef; output: AbsoluteFile,
     # way of being able to debug and rebuild the program at the same time. This
     # is accomplished using the /PDB:<filename> flag (there also exists the
     # /PDBALTPATH:<filename> flag). The only downside is that the .pdb files are
-    # atleast 300kb big (when linking statically to the runtime - or else 5mb+)
+    # at least 300kb big (when linking statically to the runtime - or else 5mb+)
     # and will quickly accumulate. There is a hacky solution: we could try to
     # delete all .pdb files with a pattern and swallow exceptions.
     #
@@ -949,6 +949,8 @@ proc callCCompiler*(conf: ConfigRef) =
 #from json import escapeJson
 import json, std / sha1
 
+template hashNimExe(): string = $secureHashFile(os.getAppFilename())
+
 proc writeJsonBuildInstructions*(conf: ConfigRef) =
   template lit(x: untyped) = f.write x
   template str(x: untyped) =
@@ -1028,7 +1030,9 @@ proc writeJsonBuildInstructions*(conf: ConfigRef) =
       str conf.commandLine
       lit ",\L\"nimfiles\":[\L"
       nimfiles(conf, f)
-      lit "]\L"
+      lit "],\L\"nimexe\": \L"
+      str hashNimExe()
+      lit "\L"
 
     lit "\L}\L"
     close(f)
@@ -1044,6 +1048,8 @@ proc changeDetectedViaJsonBuildInstructions*(conf: ConfigRef; projectfile: Absol
       return true
     let oldCmdLine = data["cmdline"].getStr
     if conf.commandLine != oldCmdLine:
+      return true
+    if hashNimExe() != data["nimexe"].getStr:
       return true
     let nimfilesPairs = data["nimfiles"]
     doAssert nimfilesPairs.kind == JArray
@@ -1074,7 +1080,7 @@ proc runJsonBuildInstructions*(conf: ConfigRef; projectfile: AbsoluteFile) =
 
       add(cmds, c[1].getStr)
       let (_, name, _) = splitFile(c[0].getStr)
-      add(prettyCmds, "CC: " & name)
+      add(prettyCmds, "CC: " & demanglePackageName(name))
 
     let prettyCb = proc (idx: int) =
       when declared(echo):

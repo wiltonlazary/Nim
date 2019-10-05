@@ -11,7 +11,7 @@ import
   os, strutils, parseopt, pegs, re, terminal
 
 const
-  Version = "1.3"
+  Version = "1.4"
   Usage = "nimgrep - Nim Grep Utility Version " & Version & """
 
   (c) 2012 Andreas Rumpf
@@ -21,8 +21,9 @@ Options:
   --find, -f          find the pattern (default)
   --replace, -r       replace the pattern
   --peg               pattern is a peg
-  --re                pattern is a regular expression (default); extended
-                      syntax for the regular expression is always turned on
+  --re                pattern is a regular expression (default)
+  --rex, -x           use the "extended" syntax for the regular expression
+                      so that whitespace is not significant
   --recursive         process directories recursively
   --confirm           confirm each occurrence/replacement; there is a chance
                       to abort any time without touching the file
@@ -32,7 +33,8 @@ Options:
   --ignoreCase, -i    be case insensitive
   --ignoreStyle, -y   be style insensitive
   --ext:EX1|EX2|...   only search the files with the given extension(s)
-  --nocolor           output will be given without any colours.
+  --nocolor           output will be given without any colours
+  --color[:always]    force color even if output is redirected
   --group             group matches by file
   --verbose           be verbose: list every processed file
   --filenames         find the pattern in the filenames, not in the contents
@@ -44,7 +46,8 @@ Options:
 type
   TOption = enum
     optFind, optReplace, optPeg, optRegex, optRecursive, optConfirm, optStdin,
-    optWord, optIgnoreCase, optIgnoreStyle, optVerbose, optFilenames
+    optWord, optIgnoreCase, optIgnoreStyle, optVerbose, optFilenames,
+    optRex
   TOptions = set[TOption]
   TConfirmEnum = enum
     ceAbort, ceYes, ceAll, ceNo, ceNone
@@ -268,6 +271,10 @@ proc checkOptions(subset: TOptions, a, b: string) =
   if subset <= options:
     quit("cannot specify both '$#' and '$#'" % [a, b])
 
+when defined(posix):
+  useWriteStyled = terminal.isatty(stdout)
+  # that should be before option processing to allow override of useWriteStyled
+
 oneline = true
 for kind, key, val in getopt():
   case kind
@@ -290,6 +297,10 @@ for kind, key, val in getopt():
     of "re":
       incl(options, optRegex)
       excl(options, optPeg)
+    of "rex", "x":
+      incl(options, optRex)
+      incl(options, optRegex)
+      excl(options, optPeg)
     of "recursive": incl(options, optRecursive)
     of "confirm": incl(options, optConfirm)
     of "stdin": incl(options, optStdin)
@@ -298,6 +309,12 @@ for kind, key, val in getopt():
     of "ignorestyle", "y": incl(options, optIgnoreStyle)
     of "ext": extensions.add val.split('|')
     of "nocolor": useWriteStyled = false
+    of "color":
+      case val
+      of "auto": discard
+      of "never", "false": useWriteStyled = false
+      of "", "always", "true": useWriteStyled = true
+      else: writeHelp()
     of "oneline": oneline = true
     of "group": oneline = false
     of "verbose": incl(options, optVerbose)
@@ -306,9 +323,6 @@ for kind, key, val in getopt():
     of "version", "v": writeVersion()
     else: writeHelp()
   of cmdEnd: assert(false) # cannot happen
-
-when defined(posix):
-  useWriteStyled = terminal.isatty(stdout)
 
 checkOptions({optFind, optReplace}, "find", "replace")
 checkOptions({optPeg, optRegex}, "peg", "re")
@@ -342,10 +356,11 @@ else:
     if optIgnoreStyle in options:
       pattern = styleInsensitive(pattern)
     if optWord in options:
-      pattern = r"\b (:?" & pattern & r") \b"
+      pattern = r"\b(:?" & pattern & r")\b"
     if {optIgnoreCase, optIgnoreStyle} * options != {}:
       reflags.incl reIgnoreCase
-    let rep = re(pattern, reflags)
+    let rep = if optRex in options: rex(pattern, reflags)
+              else: re(pattern, reflags)
     for f in items(filenames):
       walker(rep, f, counter)
   stdout.write($counter & " matches\n")

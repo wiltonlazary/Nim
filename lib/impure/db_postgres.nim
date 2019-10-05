@@ -182,7 +182,7 @@ proc setRow(res: PPGresult, r: var Row, line, cols: int32) =
 iterator fastRows*(db: DbConn, query: SqlQuery,
                    args: varargs[string, `$`]): Row {.tags: [ReadDbEffect].} =
   ## executes the query and iterates over the result dataset. This is very
-  ## fast, but potenially dangerous: If the for-loop-body executes another
+  ## fast, but potentially dangerous: If the for-loop-body executes another
   ## query, the results can be undefined. For Postgres it is safe though.
   var res = setupQuery(db, query, args)
   var L = pqnfields(res)
@@ -396,7 +396,8 @@ proc getRow*(db: DbConn, query: SqlQuery,
   var res = setupQuery(db, query, args)
   var L = pqnfields(res)
   result = newRow(L)
-  setRow(res, result, 0, L)
+  if pqntuples(res) > 0:
+    setRow(res, result, 0, L)
   pqclear(res)
 
 proc getRow*(db: DbConn, stmtName: SqlPrepared,
@@ -404,7 +405,8 @@ proc getRow*(db: DbConn, stmtName: SqlPrepared,
   var res = setupQuery(db, stmtName, args)
   var L = pqNfields(res)
   result = newRow(L)
-  setRow(res, result, 0, L)
+  if pqntuples(res) > 0:
+    setRow(res, result, 0, L)
   pqClear(res)
 
 proc getAllRows*(db: DbConn, query: SqlQuery,

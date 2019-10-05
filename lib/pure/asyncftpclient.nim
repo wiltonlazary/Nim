@@ -21,13 +21,13 @@
 ## In order to begin any sort of transfer of files you must first
 ## connect to an FTP server. You can do so with the ``connect`` procedure.
 ##
-##   .. code-block::nim
-##      import asyncdispatch, asyncftpclient
-##      proc main() {.async.} =
-##        var ftp = newAsyncFtpClient("example.com", user = "test", pass = "test")
-##        await ftp.connect()
-##        echo("Connected")
-##      waitFor(main())
+## .. code-block::nim
+##    import asyncdispatch, asyncftpclient
+##    proc main() {.async.} =
+##      var ftp = newAsyncFtpClient("example.com", user = "test", pass = "test")
+##      await ftp.connect()
+##      echo("Connected")
+##    waitFor(main())
 ##
 ## A new ``main`` async procedure must be declared to allow the use of the
 ## ``await`` keyword. The connection will complete asynchronously and the
@@ -41,16 +41,16 @@
 ## working directory before you do so with the ``pwd`` procedure, you can also
 ## instead specify an absolute path.
 ##
-##   .. code-block::nim
-##      import asyncdispatch, asyncftpclient
-##      proc main() {.async.} =
-##        var ftp = newAsyncFtpClient("example.com", user = "test", pass = "test")
-##        await ftp.connect()
-##        let currentDir = await ftp.pwd()
-##        assert currentDir == "/home/user/"
-##        await ftp.store("file.txt", "file.txt")
-##        echo("File finished uploading")
-##      waitFor(main())
+## .. code-block::nim
+##    import asyncdispatch, asyncftpclient
+##    proc main() {.async.} =
+##      var ftp = newAsyncFtpClient("example.com", user = "test", pass = "test")
+##      await ftp.connect()
+##      let currentDir = await ftp.pwd()
+##      assert currentDir == "/home/user/"
+##      await ftp.store("file.txt", "file.txt")
+##      echo("File finished uploading")
+##    waitFor(main())
 ##
 ## Checking the progress of a file transfer
 ## ========================================
@@ -59,20 +59,20 @@
 ## by specifying a ``onProgressChanged`` procedure to the ``store`` or
 ## ``retrFile`` procedures.
 ##
-##   .. code-block::nim
-##      import asyncdispatch, asyncftpclient
+## .. code-block::nim
+##    import asyncdispatch, asyncftpclient
 ##
-##      proc onProgressChanged(total, progress: BiggestInt,
-##                              speed: float): Future[void] =
-##        echo("Uploaded ", progress, " of ", total, " bytes")
-##        echo("Current speed: ", speed, " kb/s")
+##    proc onProgressChanged(total, progress: BiggestInt,
+##                            speed: float): Future[void] =
+##      echo("Uploaded ", progress, " of ", total, " bytes")
+##      echo("Current speed: ", speed, " kb/s")
 ##
-##      proc main() {.async.} =
-##        var ftp = newAsyncFtpClient("example.com", user = "test", pass = "test")
-##        await ftp.connect()
-##        await ftp.store("file.txt", "/home/user/file.txt", onProgressChanged)
-##        echo("File finished uploading")
-##      waitFor(main())
+##    proc main() {.async.} =
+##      var ftp = newAsyncFtpClient("example.com", user = "test", pass = "test")
+##      await ftp.connect()
+##      await ftp.store("file.txt", "/home/user/file.txt", onProgressChanged)
+##      echo("File finished uploading")
+##    waitFor(main())
 
 
 import asyncdispatch, asyncnet, nativesockets, strutils, parseutils, os, times
@@ -100,27 +100,27 @@ type
     of JRetr, JStore:
       file: File
       filename: string
-      total: BiggestInt # In bytes.
-      progress: BiggestInt # In bytes.
-      oneSecond: BiggestInt # Bytes transferred in one second.
+      total: BiggestInt         # In bytes.
+      progress: BiggestInt      # In bytes.
+      oneSecond: BiggestInt     # Bytes transferred in one second.
       lastProgressReport: float # Time
-      toStore: string # Data left to upload (Only used with async)
+      toStore: string           # Data left to upload (Only used with async)
 
   FtpEventType* = enum
     EvTransferProgress, EvLines, EvRetr, EvStore
 
-  FtpEvent* = object ## Event
+  FtpEvent* = object             ## Event
     filename*: string
     case typ*: FtpEventType
     of EvLines:
-      lines*: string ## Lines that have been transferred.
-    of EvRetr, EvStore: ## Retr/Store operation finished.
+      lines*: string             ## Lines that have been transferred.
+    of EvRetr, EvStore:          ## Retr/Store operation finished.
       nil
     of EvTransferProgress:
-      bytesTotal*: BiggestInt     ## Bytes total.
-      bytesFinished*: BiggestInt  ## Bytes transferred.
-      speed*: BiggestInt          ## Speed in bytes/s
-      currentJob*: FtpJobType     ## The current job being performed.
+      bytesTotal*: BiggestInt    ## Bytes total.
+      bytesFinished*: BiggestInt ## Bytes transferred.
+      speed*: BiggestInt         ## Speed in bytes/s
+      currentJob*: FtpJobType    ## The current job being performed.
 
   ReplyError* = object of IOError
 
@@ -154,7 +154,7 @@ proc assertReply(received: TaintedString, expected: varargs[string]) =
     if received.string.startsWith(i): return
   raise newException(ReplyError,
                      "Expected reply '$1' got: $2" %
-                     [expected.join("' or '"), received.string])
+                      [expected.join("' or '"), received.string])
 
 proc pasv(ftp: AsyncFtpClient) {.async.} =
   ## Negotiate a data connection.
@@ -164,8 +164,8 @@ proc pasv(ftp: AsyncFtpClient) {.async.} =
   assertReply(pasvMsg, "227")
   var betweenParens = captureBetween(pasvMsg.string, '(', ')')
   var nums = betweenParens.split(',')
-  var ip = nums[0.. ^3]
-  var port = nums[^2.. ^1]
+  var ip = nums[0 .. ^3]
+  var port = nums[^2 .. ^1]
   var properPort = port[0].parseInt()*256+port[1].parseInt()
   await ftp.dsock.connect(ip.join("."), Port(properPort.toU16))
   ftp.dsockConnected = true
@@ -321,7 +321,7 @@ proc getFile(ftp: AsyncFtpClient, file: File, total: BiggestInt,
   assertReply(await(ftp.expectReply()), "226")
 
 proc defaultOnProgressChanged*(total, progress: BiggestInt,
-    speed: float): Future[void] {.nimcall,gcsafe,procvar.} =
+    speed: float): Future[void] {.nimcall, gcsafe, procvar.} =
   ## Default FTP ``onProgressChanged`` handler. Does nothing.
   result = newFuture[void]()
   #echo(total, " ", progress, " ", speed)

@@ -1,4 +1,4 @@
-# v0.20.2 - XXXX-XX-XX
+# v0.20.2 - 2019-07-17
 
 
 ## Changes affecting backwards compatibility

@@ -1,44 +1,45 @@
-# v1.1 - XXXX-XX-XX
+# x.x - xxxx-xx-xx
 
 
 ## Changes affecting backwards compatibility
 
 
+
 ### Breaking changes in the standard library
+
 
 
 ### Breaking changes in the compiler
 
+- Implicit conversions for `const` behave correctly now, meaning that code like `const SOMECONST = 0.int; procThatTakesInt32(SOMECONST)` will be illegal now.
+  Simply write `const SOMECONST = 0` instead.
+
 
 ## Library additions
 
+- `macros.newLit` now works for ref object types.
+- `system.writeFile` has been overloaded to also support `openarray[byte]`.
 
 ## Library changes
 
-- Added `os.delEnv` and `nimscript.delEnv`. (#11466)
-
-- Enable Oid usage in hashtables. (#11472)
-
-- Added `unsafeColumnAt` procs, that return unsafe cstring from InstantRow. (#11647)
-
-- Make public `Sha1Digest` and `Sha1State` types and `newSha1State`, `update` and `finalize` procedures from `sha1` module. (#11694)
 
 
 ## Language additions
 
 
+
 ## Language changes
+
 
 
 ### Tool changes
 
-- The Nim compiler now does not recompile the Nim project via ``nim c -r`` if
-  no dependent Nim file changed. This feature can be overridden by
-  the ``--forceBuild`` command line option.
+
 
 ### Compiler changes
 
-- VM can now cast integer type arbitrarily. (#11459)
+
 
 
 ## Bugfixes
+

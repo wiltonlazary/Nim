@@ -8,7 +8,7 @@
 #
 
 import
-  os, strutils, strtabs, osproc, sets, lineinfos, platform,
+  os, strutils, strtabs, sets, lineinfos, platform,
   prefixmatches, pathutils
 
 from terminal import isatty
@@ -30,7 +30,6 @@ type                          # please make sure we have under 32 options
     optAssert, optLineDir, optWarns, optHints,
     optOptimizeSpeed, optOptimizeSize, optStackTrace, # stack tracing support
     optLineTrace,             # line tracing support (includes stack tracing)
-    optEndb,                  # embedded debugger
     optByRef,                 # use pass by ref for objects
                               # (for interfacing with C)
     optProfiler,              # profiler turned on
@@ -84,6 +83,8 @@ type                          # please make sure we have under 32 options
     optDynlibOverrideAll
     optNimV2
     optMultiMethods
+    optNimV019
+    optBenchmarkVM            # Enables cpuTime() in the VM
 
   TGlobalOptions* = set[TGlobalOption]
 
@@ -110,7 +111,7 @@ type
     cmdJsonScript             # compile a .json build file
   TStringSeq* = seq[string]
   TGCMode* = enum             # the selected GC
-    gcNone, gcBoehm, gcRegions, gcMarkAndSweep, gcDestructors,
+    gcUnselected, gcNone, gcBoehm, gcRegions, gcMarkAndSweep, gcDestructors,
     gcRefc, gcV2, gcGo
     # gcRefc and the GCs that follow it use a write barrier,
     # as far as usesWriteBarrier() is concerned
@@ -134,6 +135,12 @@ type
       ## This requires building nim with `-d:nimHasLibFFI`
       ## which itself requires `nimble install libffi`, see #10150
       ## Note: this feature can't be localized with {.push.}
+
+  LegacyFeature* = enum
+    allowSemcheckedAstModification,
+      ## Allows to modify a NimNode where the type has already been
+      ## flagged with nfSem. If you actually do this, it will cause
+      ## bugs.
 
   SymbolFilesOption* = enum
     disabledSf, writeOnlySf, readOnlySf, v2Sf
@@ -196,6 +203,7 @@ type
     cppDefines*: HashSet[string] # (*)
     headerFile*: string
     features*: set[Feature]
+    legacyFeatures*: set[LegacyFeature]
     arguments*: string ## the arguments to be passed to the program that
                        ## should be run
     ideCmd*: IdeCmd
@@ -315,7 +323,7 @@ proc newConfigRef*(): ConfigRef =
     m: initMsgConfig(),
     evalExpr: "",
     cppDefines: initHashSet[string](),
-    headerFile: "", features: {}, foreignPackageNotes: {hintProcessing, warnUnknownMagic,
+    headerFile: "", features: {}, legacyFeatures: {}, foreignPackageNotes: {hintProcessing, warnUnknownMagic,
     hintQuitCalled, hintExecuting},
     notes: NotesVerbosity[1], mainPackageNotes: NotesVerbosity[1],
     configVars: newStringTable(modeStyleInsensitive),
@@ -390,7 +398,7 @@ proc isDefined*(conf: ConfigRef; symbol: string): bool =
       result = conf.target.targetOS in {osLinux, osMorphos, osSkyos, osIrix, osPalmos,
                             osQnx, osAtari, osAix,
                             osHaiku, osVxWorks, osSolaris, osNetbsd,
-                            osFreebsd, osOpenbsd, osDragonfly, osMacosx,
+                            osFreebsd, osOpenbsd, osDragonfly, osMacosx, osIos,
                             osAndroid, osNintendoSwitch}
     of "linux":
       result = conf.target.targetOS in {osLinux, osAndroid}
@@ -400,8 +408,10 @@ proc isDefined*(conf: ConfigRef; symbol: string): bool =
       result = platform.OS[conf.target.targetOS].props.contains(ospLacksThreadVars)
     of "msdos": result = conf.target.targetOS == osDos
     of "mswindows", "win32": result = conf.target.targetOS == osWindows
-    of "macintosh": result = conf.target.targetOS in {osMacos, osMacosx}
-    of "osx": result = conf.target.targetOS == osMacosx
+    of "macintosh":
+      result = conf.target.targetOS in {osMacos, osMacosx, osIos}
+    of "osx":
+      result = conf.target.targetOS in {osMacosx, osIos}
     of "sunos": result = conf.target.targetOS == osSolaris
     of "nintendoswitch":
       result = conf.target.targetOS == osNintendoSwitch
@@ -464,12 +474,16 @@ proc getOutFile*(conf: ConfigRef; filename: RelativeFile, ext: string): Absolute
   conf.outDir / changeFileExt(filename, ext)
 
 proc absOutFile*(conf: ConfigRef): AbsoluteFile =
-  conf.outDir / conf.outFile
+  result = conf.outDir / conf.outFile
+  if dirExists(result.string):
+    result.string.add ".out"
 
 proc prepareToWriteOutput*(conf: ConfigRef): AbsoluteFile =
   ## Create the output directory and returns a full path to the output file
   createDir conf.outDir
-  return conf.outDir / conf.outFile
+  result = conf.outDir / conf.outFile
+  if dirExists(result.string):
+    result.string.add ".out"
 
 proc getPrefixDir*(conf: ConfigRef): AbsoluteDir =
   ## Gets the prefix dir, usually the parent directory where the binary resides.
@@ -711,3 +725,13 @@ proc `$`*(c: IdeCmd): string =
   of ideOutline: "outline"
   of ideKnown: "known"
   of ideMsg: "msg"
+
+proc floatInt64Align*(conf: ConfigRef): int16 =
+  ## Returns either 4 or 8 depending on reasons.
+  if conf != nil and conf.target.targetCPU == cpuI386:
+    #on Linux/BSD i386, double are aligned to 4bytes (except with -malign-double)
+    if conf.target.targetOS != osWindows:
+      # on i386 for all known POSIX systems, 64bits ints are aligned
+      # to 4bytes (except with -malign-double)
+      return 4
+  return 8

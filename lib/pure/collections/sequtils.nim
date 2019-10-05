@@ -417,7 +417,10 @@ proc keepIf*[T](s: var seq[T], pred: proc(x: T): bool {.closure.})
   for i in 0 ..< len(s):
     if pred(s[i]):
       if pos != i:
-        shallowCopy(s[pos], s[i])
+        when defined(gcDestructors):
+          s[pos] = move(s[i])
+        else:
+          shallowCopy(s[pos], s[i])
       inc(pos)
   setLen(s, pos)
 
@@ -436,7 +439,10 @@ proc delete*[T](s: var seq[T]; first, last: Natural) =
   var j = min(len(s), last+1)
   var newLen = len(s)-j+i
   while i < newLen:
-    s[i].shallowCopy(s[j])
+    when defined(gcDestructors):
+      s[i] = move(s[j])
+    else:
+      s[i].shallowCopy(s[j])
     inc(i)
     inc(j)
   setLen(s, newLen)
@@ -461,7 +467,10 @@ proc insert*[T](dest: var seq[T], src: openArray[T], pos = 0) =
 
   # Move items after `pos` to the end of the sequence.
   while j >= pos:
-    dest[i].shallowCopy(dest[j])
+    when defined(gcDestructors):
+      dest[i] = move(dest[j])
+    else:
+      dest[i].shallowCopy(dest[j])
     dec(i)
     dec(j)
   # Insert items from `dest` into `dest` at `pos`
@@ -519,7 +528,10 @@ template keepItIf*(varSeq: seq, pred: untyped) =
     let it {.inject.} = varSeq[i]
     if pred:
       if pos != i:
-        shallowCopy(varSeq[pos], varSeq[i])
+        when defined(gcDestructors):
+          varSeq[pos] = move(varSeq[i])
+        else:
+          shallowCopy(varSeq[pos], varSeq[i])
       inc(pos)
   setLen(varSeq, pos)
 
@@ -609,18 +621,18 @@ template anyIt*(s, pred: untyped): bool =
 
 template toSeq1(s: not iterator): untyped =
   # overload for typed but not iterator
-  type outType = type(items(s))
+  type OutType = type(items(s))
   when compiles(s.len):
     block:
       evalOnceAs(s2, s, compiles((let _ = s)))
       var i = 0
-      var result = newSeq[outType](s2.len)
+      var result = newSeq[OutType](s2.len)
       for it in s2:
         result[i] = it
         i += 1
       result
   else:
-    var result: seq[outType] = @[]
+    var result: seq[OutType] = @[]
     for it in s:
       result.add(it)
     result
@@ -636,8 +648,8 @@ template toSeq2(iter: iterator): untyped =
       inc i
     result
   else:
-    type outType = type(iter2())
-    var result: seq[outType] = @[]
+    type OutType = type(iter2())
+    var result: seq[OutType] = @[]
     when compiles(iter2()):
       evalOnceAs(iter4, iter, false)
       let iter3 = iter4()
@@ -819,12 +831,12 @@ template mapIt*(s: typed, op: untyped): untyped =
     assert strings == @["4", "8", "12", "16"]
 
   when defined(nimHasTypeof):
-    type outType = typeof((
+    type OutType = typeof((
       block:
         var it{.inject.}: typeof(items(s), typeOfIter);
         op), typeOfProc)
   else:
-    type outType = type((
+    type OutType = type((
       block:
         var it{.inject.}: type(items(s));
         op))
@@ -836,19 +848,19 @@ template mapIt*(s: typed, op: untyped): untyped =
       evalOnceAs(s2, s, compiles((let _ = s)))
 
       var i = 0
-      var result = newSeq[outType](s2.len)
+      var result = newSeq[OutType](s2.len)
       for it {.inject.} in s2:
         result[i] = op
         i += 1
       result
   else:
-    var result: seq[outType] = @[]
+    var result: seq[OutType] = @[]
     for it {.inject.} in s:
       result.add(op)
     result
 
 template mapIt*(s, typ, op: untyped): untyped {.error:
-  "Deprecated since v0.12; Use 'mapIt(seq1, op)' - without specifying the type of the returned seqence".} =
+  "Deprecated since v0.12; Use 'mapIt(seq1, op)' - without specifying the type of the returned sequence".} =
   var result: seq[typ] = @[]
   for it {.inject.} in items(s):
     result.add(op)
@@ -883,7 +895,7 @@ template newSeqWith*(len: int, init: untyped): untyped =
   ## or to populate fields of the created sequence.
   ##
   runnableExamples:
-    ## Creates a seqence containing 5 bool sequences, each of length of 3.
+    ## Creates a sequence containing 5 bool sequences, each of length of 3.
     var seq2D = newSeqWith(5, newSeq[bool](3))
     assert seq2D.len == 5
     assert seq2D[0].len == 3

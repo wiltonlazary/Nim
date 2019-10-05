@@ -29,7 +29,7 @@
 ## "A Graph–Free Approach to Data–Flow Analysis" by Markus Mohnen.
 ## https://link.springer.com/content/pdf/10.1007/3-540-45937-5_6.pdf
 
-import ast, astalgo, types, intsets, tables, msgs, options, lineinfos, renderer
+import ast, types, intsets, lineinfos, renderer
 
 from patterns import sameTrees
 
@@ -513,7 +513,7 @@ proc genTry(c: var Con; n: PNode) =
     let f = c.tryStmtFixups[i]
     c.patch(f)
     # we also need to produce join instructions
-    # for the 'fork' that might preceed the goto instruction
+    # for the 'fork' that might precede the goto instruction
     if f.int-1 >= 0 and c.code[f.int-1].kind == fork:
       c.joinI(TPosition(f.int-1), n)
 
@@ -607,14 +607,9 @@ proc aliases(obj, field: PNode): bool =
     if sameTrees(obj, n): return true
     case n.kind
     of nkDotExpr, nkCheckedFieldExpr, nkHiddenSubConv, nkHiddenStdConv,
-       nkObjDownConv, nkObjUpConv, nkHiddenDeref, nkDerefExpr:
+       nkObjDownConv, nkObjUpConv, nkHiddenAddr, nkAddr, nkBracketExpr,
+       nkHiddenDeref, nkDerefExpr:
       n = n[0]
-    of nkBracketExpr:
-      let x = n[0]
-      if x.typ != nil and x.typ.skipTypes(abstractInst).kind == tyTuple:
-        n = x
-      else:
-        break
     else:
       break
   return false
@@ -652,7 +647,7 @@ proc isAnalysableFieldAccess*(orig: PNode; owner: PSym): bool =
   while true:
     case n.kind
     of nkDotExpr, nkCheckedFieldExpr, nkHiddenSubConv, nkHiddenStdConv,
-       nkObjDownConv, nkObjUpConv:
+       nkObjDownConv, nkObjUpConv, nkHiddenAddr, nkAddr, nkBracketExpr:
       n = n[0]
     of nkHiddenDeref, nkDerefExpr:
       # We "own" sinkparam[].loc but not ourVar[].location as it is a nasty
@@ -660,12 +655,6 @@ proc isAnalysableFieldAccess*(orig: PNode; owner: PSym): bool =
       n = n[0]
       return n.kind == nkSym and n.sym.owner == owner and (isSinkParam(n.sym) or
           n.sym.typ.skipTypes(abstractInst-{tyOwned}).kind in {tyOwned})
-    of nkBracketExpr:
-      let x = n[0]
-      if x.typ != nil and x.typ.skipTypes(abstractInst).kind == tyTuple:
-        n = x
-      else:
-        break
     else:
       break
   # XXX Allow closure deref operations here if we know

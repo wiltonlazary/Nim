@@ -17,7 +17,7 @@ include "system/inclrtl"
 type
   NodeObj[T] {.acyclic.} = object
     byte: int ## byte index of the difference
-    otherbits: char
+    otherBits: char
     case isLeaf: bool
     of false: child: array[0..1, ref NodeObj[T]]
     of true:
@@ -69,14 +69,14 @@ proc rawInsert[T](c: var CritBitTree[T], key: string): Node[T] =
     var newOtherBits = 0
     var newByte = 0
     block blockX:
-      while newbyte < key.len:
-        let ch = if newbyte < it.key.len: it.key[newbyte] else: '\0'
-        if ch != key[newbyte]:
-          newotherbits = ch.ord xor key[newbyte].ord
+      while newByte < key.len:
+        let ch = if newByte < it.key.len: it.key[newByte] else: '\0'
+        if ch != key[newByte]:
+          newOtherBits = ch.ord xor key[newByte].ord
           break blockX
-        inc newbyte
-      if newbyte < it.key.len:
-        newotherbits = it.key[newbyte].ord
+        inc newByte
+      if newByte < it.key.len:
+        newOtherBits = it.key[newByte].ord
       else:
         return it
     while (newOtherBits and (newOtherBits-1)) != 0:
@@ -186,14 +186,13 @@ template get[T](c: CritBitTree[T], key: string): T =
 
   n.val
 
-proc `[]`*[T](c: CritBitTree[T], key: string): T {.inline, deprecatedGet.} =
+proc `[]`*[T](c: CritBitTree[T], key: string): T {.inline.} =
   ## retrieves the value at ``c[key]``. If `key` is not in `t`, the
   ## ``KeyError`` exception is raised. One can check with ``hasKey`` whether
   ## the key exists.
   get(c, key)
 
-proc `[]`*[T](c: var CritBitTree[T], key: string): var T {.inline,
-  deprecatedGet.} =
+proc `[]`*[T](c: var CritBitTree[T], key: string): var T {.inline.} =
   ## retrieves the value at ``c[key]``. The value can be modified.
   ## If `key` is not in `t`, the ``KeyError`` exception is raised.
   get(c, key)

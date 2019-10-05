@@ -11,9 +11,7 @@
 
 import ast, tables, ropes, md5, modulegraphs
 from hashes import Hash
-from astalgo import debug
 import types
-from strutils import startsWith, contains
 
 proc `&=`(c: var MD5Context, s: string) = md5Update(c, s, s.len)
 proc `&=`(c: var MD5Context, ch: char) = md5Update(c, unsafeAddr ch, 1)
@@ -95,7 +93,7 @@ proc hashType(c: var MD5Context, t: PType; flags: set[ConsiderFlag]) =
 
   case t.kind
   of tyGenericInvocation:
-    for i in 0 ..< sonsLen(t):
+    for i in 0 ..< len(t):
       c.hashType t.sons[i], flags
   of tyDistinct:
     if CoDistinct in flags:
@@ -182,15 +180,15 @@ proc hashType(c: var MD5Context, t: PType; flags: set[ConsiderFlag]) =
   of tyTuple:
     c &= char(t.kind)
     if t.n != nil and CoType notin flags:
-      assert(sonsLen(t.n) == sonsLen(t))
-      for i in 0 ..< sonsLen(t.n):
+      assert(len(t.n) == len(t))
+      for i in 0 ..< len(t.n):
         assert(t.n.sons[i].kind == nkSym)
         c &= t.n.sons[i].sym.name.s
         c &= ':'
         c.hashType(t.sons[i], flags+{CoIgnoreRange})
         c &= ','
     else:
-      for i in 0 ..< sonsLen(t): c.hashType t.sons[i], flags+{CoIgnoreRange}
+      for i in 0 ..< len(t): c.hashType t.sons[i], flags+{CoIgnoreRange}
   of tyRange:
     if CoIgnoreRange notin flags:
       c &= char(t.kind)

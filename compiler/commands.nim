@@ -27,8 +27,10 @@ bootSwitch(usedNoGC, defined(nogc), "--gc:none")
 
 import
   os, msgs, options, nversion, condsyms, strutils, extccomp, platform,
-  wordrecg, parseutils, nimblecmd, idents, parseopt, sequtils, lineinfos,
+  wordrecg, parseutils, nimblecmd, parseopt, sequtils, lineinfos,
   pathutils, strtabs
+
+from incremental import nimIncremental
 
 # but some have deps to imported modules. Yay.
 bootSwitch(usedTinyC, hasTinyCBackend, "-d:tinyc")
@@ -48,15 +50,16 @@ const
       "Compiled at $4\n" &
       "Copyright (c) 2006-" & copyrightYear & " by Andreas Rumpf\n"
 
+proc genFeatureDesc[T: enum](t: typedesc[T]): string {.compileTime.} =
+  var x = ""
+  for f in low(T)..high(T):
+    if x.len > 0: x.add "|"
+    x.add $f
+  x
+
 const
   Usage = slurp"../doc/basicopt.txt".replace(" //", " ")
-  FeatureDesc = block:
-    var x = ""
-    for f in low(Feature)..high(Feature):
-      if x.len > 0: x.add "|"
-      x.add $f
-    x
-  AdvancedUsage = slurp"../doc/advopt.txt".replace(" //", " ") % FeatureDesc
+  AdvancedUsage = slurp"../doc/advopt.txt".replace(" //", " ") % [genFeatureDesc(Feature), genFeatureDesc(LegacyFeature)]
 
 proc getCommandLineDesc(conf: ConfigRef): string =
   result = (HelpMessage % [VersionAsString, platform.OS[conf.target.hostOS].name,
@@ -263,7 +266,7 @@ proc testCompileOption*(conf: ConfigRef; switch: string, info: TLineInfo): bool 
   of "threadanalysis": result = contains(conf.globalOptions, optThreadAnalysis)
   of "stacktrace": result = contains(conf.options, optStackTrace)
   of "linetrace": result = contains(conf.options, optLineTrace)
-  of "debugger": result = contains(conf.options, optEndb)
+  of "debugger": result = contains(conf.globalOptions, optCDebug)
   of "profiler": result = contains(conf.options, optProfiler)
   of "memtracker": result = contains(conf.options, optMemTracker)
   of "checks", "x": result = conf.options * ChecksOptions == ChecksOptions
@@ -434,30 +437,31 @@ proc processSwitch*(switch, arg: string, pass: TCmdLinePass, info: TLineInfo;
     processOnOffSwitchG(conf, {optWholeProject}, arg, pass, info)
   of "gc":
     expectArg(conf, switch, arg, pass, info)
-    case arg.normalize
-    of "boehm":
-      conf.selectedGC = gcBoehm
-      defineSymbol(conf.symbols, "boehmgc")
-    of "refc":
-      conf.selectedGC = gcRefc
-    of "v2":
-      message(conf, info, warnDeprecated, "--gc:v2 is deprecated; using default gc")
-    of "markandsweep":
-      conf.selectedGC = gcMarkAndSweep
-      defineSymbol(conf.symbols, "gcmarkandsweep")
-    of "destructors":
-      conf.selectedGC = gcDestructors
-      defineSymbol(conf.symbols, "gcdestructors")
-    of "go":
-      conf.selectedGC = gcGo
-      defineSymbol(conf.symbols, "gogc")
-    of "none":
-      conf.selectedGC = gcNone
-      defineSymbol(conf.symbols, "nogc")
-    of "stack", "regions":
-      conf.selectedGC= gcRegions
-      defineSymbol(conf.symbols, "gcregions")
-    else: localError(conf, info, errNoneBoehmRefcExpectedButXFound % arg)
+    if pass in {passCmd2, passPP}:
+      case arg.normalize
+      of "boehm":
+        conf.selectedGC = gcBoehm
+        defineSymbol(conf.symbols, "boehmgc")
+      of "refc":
+        conf.selectedGC = gcRefc
+      of "v2":
+        message(conf, info, warnDeprecated, "--gc:v2 is deprecated; using default gc")
+      of "markandsweep":
+        conf.selectedGC = gcMarkAndSweep
+        defineSymbol(conf.symbols, "gcmarkandsweep")
+      of "destructors":
+        conf.selectedGC = gcDestructors
+        defineSymbol(conf.symbols, "gcdestructors")
+      of "go":
+        conf.selectedGC = gcGo
+        defineSymbol(conf.symbols, "gogc")
+      of "none":
+        conf.selectedGC = gcNone
+        defineSymbol(conf.symbols, "nogc")
+      of "stack", "regions":
+        conf.selectedGC= gcRegions
+        defineSymbol(conf.symbols, "gcregions")
+      else: localError(conf, info, errNoneBoehmRefcExpectedButXFound % arg)
   of "warnings", "w":
     if processOnOffSwitchOrList(conf, {optWarns}, arg, pass, info): listWarnings(conf)
   of "warning": processSpecificNote(arg, wWarning, pass, info, switch, conf)
@@ -470,24 +474,18 @@ proc processSwitch*(switch, arg: string, pass: TCmdLinePass, info: TLineInfo;
   of "linetrace": processOnOffSwitch(conf, {optLineTrace}, arg, pass, info)
   of "debugger":
     case arg.normalize
-    of "on", "endb":
-      conf.options.incl optEndb
-      defineSymbol(conf.symbols, "endb")
-    of "off":
-      conf.options.excl optEndb
-      undefSymbol(conf.symbols, "endb")
-    of "native", "gdb":
-      incl(conf.globalOptions, optCDebug)
-      conf.options = conf.options + {optLineDir} - {optEndb}
+    of "on", "native", "gdb":
+      conf.globalOptions.incl optCDebug
+      conf.options.incl optLineDir
       #defineSymbol(conf.symbols, "nimTypeNames") # type names are used in gdb pretty printing
-      undefSymbol(conf.symbols, "endb")
+    of "off":
+      conf.globalOptions.excl optCDebug
     else:
-      localError(conf, info, "expected endb|gdb but found " & arg)
+      localError(conf, info, "expected native|gdb|on|off but found " & arg)
   of "g": # alias for --debugger:native
-    incl(conf.globalOptions, optCDebug)
-    conf.options = conf.options + {optLineDir} - {optEndb}
+    conf.globalOptions.incl optCDebug
+    conf.options.incl optLineDir
     #defineSymbol(conf.symbols, "nimTypeNames") # type names are used in gdb pretty printing
-    undefSymbol(conf.symbols, "endb")
   of "profiler":
     processOnOffSwitch(conf, {optProfiler}, arg, pass, info)
     if optProfiler in conf.options: defineSymbol(conf.symbols, "profiler")
@@ -669,7 +667,7 @@ proc processSwitch*(switch, arg: string, pass: TCmdLinePass, info: TLineInfo;
     helpOnError(conf, pass)
   of "symbolfiles": discard "ignore for backwards compat"
   of "incremental":
-    when not defined(nimIncremental):
+    when not nimIncremental:
       localError(conf, info, "the compiler was not built with " &
         "incremental compilation features; bootstrap with " &
         "-d:nimIncremental to enable")
@@ -742,6 +740,11 @@ proc processSwitch*(switch, arg: string, pass: TCmdLinePass, info: TLineInfo;
         conf.features.incl parseEnum[Feature](arg)
       except ValueError:
         localError(conf, info, "unknown experimental feature")
+  of "legacy":
+    try:
+      conf.legacyFeatures.incl parseEnum[LegacyFeature](arg)
+    except ValueError:
+      localError(conf, info, "unknown obsolete feature")
   of "nocppexceptions":
     expectNoArg(conf, switch, arg, pass, info)
     incl(conf.globalOptions, optNoCppExceptions)
@@ -780,6 +783,17 @@ proc processSwitch*(switch, arg: string, pass: TCmdLinePass, info: TLineInfo;
   of "expandmacro":
     expectArg(conf, switch, arg, pass, info)
     conf.macrosToExpand[arg] = "T"
+  of "oldgensym":
+    processOnOffSwitchG(conf, {optNimV019}, arg, pass, info)
+  of "useversion":
+    expectArg(conf, switch, arg, pass, info)
+    case arg
+    of "1.0":
+      discard "the default"
+    else:
+      localError(conf, info, "unknown Nim version; currently supported values are: {1.0}")
+  of "benchmarkvm":
+    processOnOffSwitchG(conf, {optBenchmarkVM}, arg, pass, info)
   of "":
     conf.projectName = "-"
   else:
