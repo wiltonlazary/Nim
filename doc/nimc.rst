@@ -114,7 +114,8 @@ Level  Description
 =====  ============================================
 0      Minimal output level for the compiler.
 1      Displays compilation of all the compiled files, including those imported
-       by other modules or through the `compile pragma<#compile-pragma>`_.
+       by other modules or through the `compile pragma
+       <manual.html#implementation-specific-pragmas-compile-pragma>`_.
        This is the default level.
 2      Displays compilation statistics, enumerates the dynamic
        libraries that will be loaded by the final binary and dumps to
@@ -130,9 +131,10 @@ Compile time symbols
 
 Through the ``-d:x`` or ``--define:x`` switch you can define compile time
 symbols for conditional compilation. The defined switches can be checked in
-source code with the `when statement <manual.html#when-statement>`_ and
-`defined proc <system.html#defined>`_. The typical use of this switch is to
-enable builds in release mode (``-d:release``) where optimizations are
+source code with the `when statement
+<manual.html#statements-and-expressions-when-statement>`_ and
+`defined proc <system.html#defined,untyped>`_. The typical use of this switch is
+to enable builds in release mode (``-d:release``) where optimizations are
 enabled for better performance. Another common use is the ``-d:ssl`` switch to
 activate SSL sockets.
 
@@ -215,7 +217,7 @@ The ``_r`` suffix is used for release builds, ``_d`` is for debug builds.
 This makes it easy to delete all generated files.
 
 The ``--nimcache``
-`compiler switch <nimc.html#command-line-switches>`_ can be used to
+`compiler switch <#compiler-usage-command-line-switches>`_ can be used to
 to change the ``nimcache`` directory.
 
 However, the generated C code is not platform independent. C code generated for
@@ -235,8 +237,8 @@ This uses the configuration defined in ``config\nim.cfg`` for ``lvm_gcc``.
 If nimcache already contains compiled code from a different compiler for the same project,
 add the ``-f`` flag to force all files to be recompiled.
 
-The default compiler is defined at the top of ``config\nim.cfg``.  Changing this setting
-affects the compiler used by ``koch`` to (re)build Nim.
+The default compiler is defined at the top of ``config\nim.cfg``.
+Changing this setting affects the compiler used by ``koch`` to (re)build Nim.
 
 
 Cross compilation
@@ -555,9 +557,9 @@ For example, to generate code for an `AVR`:idx: processor use this command::
 For the ``standalone`` target one needs to provide
 a file ``panicoverride.nim``.
 See ``tests/manyloc/standalone/panicoverride.nim`` for an example
-implementation.  Additionally, users should specify the
+implementation. Additionally, users should specify the
 amount of heap space to use with the ``-d:StandaloneHeapSize=<size>``
-command line switch.  Note that the total heap size will be
+command line switch. Note that the total heap size will be
 ``<size> * sizeof(float64)``.
 
 

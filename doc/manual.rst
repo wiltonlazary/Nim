@@ -1482,7 +1482,8 @@ order. The *names* of the fields also have to be identical.
 
 The assignment operator for tuples copies each component.
 The default assignment operator for objects copies each component. Overloading
-of the assignment operator is described in `type-bound-operations-operator`_.
+of the assignment operator is described `here
+<manual_experimental.html#type-bound-operations>`_.
 
 .. code-block:: nim
 
@@ -1643,7 +1644,7 @@ object branch, the initialization is considered valid. This analysis only works
 for immutable discriminators of an ordinal type and disregards ``elif``
 branches. For discriminator values with a ``range`` type, the compiler
 checks if the entire range of possible values for the discriminator value is
-valid for the choosen object branch.
+valid for the chosen object branch.
 
 A small example:
 
@@ -2132,7 +2133,7 @@ conversions from ``string`` to ``SQL`` are allowed:
 Now we have compile-time checking against SQL injection attacks.  Since
 ``"".SQL`` is transformed to ``SQL("")`` no new syntax is needed for nice
 looking ``SQL`` string literals. The hypothetical ``SQL`` type actually
-exists in the library as the `TSqlQuery type <db_sqlite.html#TSqlQuery>`_ of
+exists in the library as the `SqlQuery type <db_common.html#SqlQuery>`_ of
 modules like `db_sqlite <db_sqlite.html>`_.
 
 
@@ -2643,7 +2644,7 @@ tuple[x: A, y: B, ...]          (default(A), default(B), ...)
                                 (analogous for objects)
 array[0..., T]                  [default(T), ...]
 range[T]                        default(T); this may be out of the valid range
-T = enum                        cast[T](0); this may be an invalid value
+T = enum                        cast[T]\(0); this may be an invalid value
 ============================    ==============================================
 
 
@@ -3187,6 +3188,7 @@ has lots of advantages:
 
 Type conversions
 ----------------
+
 Syntactically a `type conversion` is like a procedure call, but a
 type name replaces the procedure name. A type conversion is always
 safe in the sense that a failure to convert a type to another
@@ -3205,6 +3207,19 @@ A type conversion can also be used to disambiguate overloaded routines:
 
   let procVar = (proc(x: string))(p)
   procVar("a")
+
+Since operations on unsigned numbers wrap around and are unchecked so are
+type conversion to unsigned integers and between unsigned integers. The
+rationale for this is mostly better interoperability with the C Programming
+language when algorithms are ported from C to Nim.
+
+Exception: Values that are converted to an unsigned type at compile time
+are checked so that code like ``byte(-1)`` does not compile.
+
+**Note**: Historically the operations
+were unchecked and the conversions were sometimes checked but starting with
+the revision 1.0.4 of this document and the language implementation the
+conversions too are now *always unchecked*.
 
 
 Type casts
@@ -3425,14 +3440,14 @@ different; for this a special setter syntax is needed:
     ## setter of hostAddr.
     ## This accesses the 'host' field and is not a recursive call to
     ## ``host=`` because the builtin dot access is preferred if it is
-    ## avaliable:
+    ## available:
     s.host = value
 
   proc host*(s: Socket): int {.inline.} =
     ## getter of hostAddr
     ## This accesses the 'host' field and is not a recursive call to
     ## ``host`` because the builtin dot access is preferred if it is
-    ## avaliable:
+    ## available:
     s.host
 
 .. code-block:: nim
@@ -3484,8 +3499,8 @@ more argument in this case:
   assert x == y
 
 The command invocation syntax also can't have complex expressions as arguments.
-For example: (`anonymous procs`_), ``if``, ``case`` or ``try``.
-Function calls with no arguments still needs () to
+For example: (`anonymous procs <#procedures-anonymous-procs>`_), ``if``,
+``case`` or ``try``. Function calls with no arguments still needs () to
 distinguish between a call and the function itself as a first class value.
 
 
@@ -3505,14 +3520,14 @@ Creating closures in loops
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Since closures capture local variables by reference it is often not wanted
-behavior inside loop bodies. See `closureScope <system.html#closureScope>`_
-for details on how to change this behavior.
+behavior inside loop bodies. See `closureScope
+<system.html#closureScope.t,untyped>`_ for details on how to change this behavior.
 
 Anonymous Procs
 ---------------
 
-Procs can also be treated as expressions, in which case it's allowed to omit
-the proc's name.
+Unnamed procedures can be used as lambda expressions to pass into other
+procedures:
 
 .. code-block:: nim
   var cities = @["Frankfurt", "Tokyo", "New York", "Kyiv"]
@@ -3522,7 +3537,9 @@ the proc's name.
 
 
 Procs as expressions can appear both as nested procs and inside top level
-executable code.
+executable code. The  `sugar <sugar.html>`_ module contains the `=>` macro
+which enables a more succinct syntax for anonymous procedures resembling
+lambdas as they are in languages like JavaScript, C#, etc.
 
 
 Func
@@ -3662,7 +3679,7 @@ a syntax like:
   proc foo(other: Y; container: var X): var T from container
 
 Here ``var T from container`` explicitly exposes that the
-location is deviated from the second parameter (called
+location is derived from the second parameter (called
 'container' in this case). The syntax ``var T from p`` specifies a type
 ``varTy[T, 2]`` which is incompatible with ``varTy[T, 1]``.
 
@@ -3694,7 +3711,7 @@ type.
 
   method eval(e: Expression): int {.base.} =
     # override this base method
-    quit "to override!"
+    raise newException(CatchableError, "Method without implementation override")
 
   method eval(e: Literal): int = return e.x
 
@@ -4112,6 +4129,23 @@ error message from ``e``, and for such situations it is enough to use
   except:
     echo getCurrentExceptionMsg()
 
+Custom exceptions
+-----------------
+
+Is it possible to create custom exceptions. These make it easy to distinguish between exceptions raised by nim and those from your own code.
+
+A custom exception is a custom type:
+
+.. code-block:: nim
+  type
+    LoadError* = object of Exception
+  
+Ending the custom exception's name with ``Error`` is recommended.
+
+Custom exceptions can be raised like any others, e.g.:
+
+.. code-block:: nim
+  raise newException(LoadError, "Failed to load data")
 
 Defer statement
 ---------------
@@ -5083,6 +5117,25 @@ The problem here is that the compiler already decided that ``something()`` as
 an iterator is not callable in this context before ``toSeq`` gets its
 chance to convert it into a sequence.
 
+It is also not possible to use fully qualified identifiers with module
+symbol in method call syntax. The order in which the dot operator
+binds to symbols prohibits this.
+
+.. code-block:: nim
+    :test: "nim c $1"
+    :status: 1
+
+   import sequtils
+
+   var myItems = @[1,3,3,7]
+   let N1 = count(myItems, 3) # OK
+   let N2 = sequtils.count(myItems, 3) # fully qualified, OK
+   let N3 = myItems.count(3) # OK
+   let N4 = myItems.sequtils.count(3) # illegal, `myItems.sequtils` can't be resolved
+
+This means that when for some reason a procedure needs a
+disambiguation through the module name, the call needs to be
+written in function call syntax.
 
 Macros
 ======
@@ -5373,7 +5426,7 @@ expression by coercing it to a corresponding ``static`` type:
 
   echo static(fac(5)), " ", static[bool](16.isPowerOfTwo)
 
-The complier will report any failure to evaluate the expression or a
+The compiler will report any failure to evaluate the expression or a
 possible type mismatch error.
 
 typedesc[T]
@@ -5385,7 +5438,7 @@ all values must have a type, ``typedesc`` is considered their special type.
 
 ``typedesc`` acts like a generic type. For instance, the type of the symbol
 ``int`` is ``typedesc[int]``. Just like with regular generic types, when the
-generic param is ommited, ``typedesc`` denotes the type class of all types.
+generic param is omitted, ``typedesc`` denotes the type class of all types.
 As a syntactic convenience, you can also use ``typedesc`` as a modifier.
 
 Procs featuring ``typedesc`` params are considered implicitly generic.
@@ -5893,9 +5946,9 @@ or ``ref T`` or ``ptr T`` this means no locations are modified. It is a static
 error to mark a proc/iterator to have no side effect if the compiler cannot
 verify this.
 
-As a special semantic rule, the built-in `debugEcho <system.html#debugEcho>`_
-pretends to be free of side effects, so that it can be used for debugging
-routines marked as ``noSideEffect``.
+As a special semantic rule, the built-in `debugEcho
+<system.html#debugEcho,varargs[typed,]>`_ pretends to be free of side effects,
+so that it can be used for debugging routines marked as ``noSideEffect``.
 
 ``func`` is syntactic sugar for a proc with no side effects:
 
@@ -5964,8 +6017,32 @@ The ``noreturn`` pragma is used to mark a proc that never returns.
 
 acyclic pragma
 --------------
-The ``acyclic`` pragma applies to type declarations. It is deprecated and
-ignored.
+The ``acyclic`` pragma can be used for object types to mark them as acyclic
+even though they seem to be cyclic. This is an **optimization** for the garbage
+collector to not consider objects of this type as part of a cycle:
+
+.. code-block:: nim
+  type
+    Node = ref NodeObj
+    NodeObj {.acyclic.} = object
+      left, right: Node
+      data: string
+
+Or if we directly use a ref object:
+
+.. code-block:: nim
+  type
+    Node {.acyclic.} = ref object
+      left, right: Node
+      data: string
+
+In the example a tree structure is declared with the ``Node`` type. Note that
+the type definition is recursive and the GC has to assume that objects of
+this type may form a cyclic graph. The ``acyclic`` pragma passes the
+information that this cannot happen to the GC. If the programmer uses the
+``acyclic`` pragma for data types that are in reality cyclic, the memory leaks
+can be the result, but memory safety is preserved.
+
 
 
 final pragma
@@ -6166,7 +6243,8 @@ factor.
 immediate pragma
 ----------------
 
-The immediate pragma is obsolete. See `Typed vs untyped parameters`_.
+The immediate pragma is obsolete. See `Typed vs untyped parameters
+<#templates-typed-vs-untyped-parameters>`_.
 
 
 compilation option pragmas
@@ -6221,6 +6299,25 @@ but are used to override the settings temporarily. Example:
   # speed critical
   # ... some code ...
   {.pop.} # restore old settings
+
+`push/pop`:idx: can switch on/off some standard library pragmas, example:
+
+.. code-block:: nim
+  {.push inline.}
+  proc thisIsInlined(): int = 42
+  func willBeInlined(): float = 42.0
+  {.pop.}
+  proc notInlined(): int = 9
+
+  {.push discardable, boundChecks: off, compileTime, noSideEffect, experimental.}
+  template example(): string = "https://nim-lang.org"
+  {.pop.}
+
+  {.push deprecated, hint[LineTooLong]: off, used, stackTrace: off.}
+  proc sample(): bool = true
+  {.pop.}
+
+For third party pragmas it depends on its implementation, but uses the same syntax.
 
 
 register pragma
@@ -6329,12 +6426,18 @@ is uncertain (it may be removed any time).
 Example:
 
 .. code-block:: nim
+  import threadpool
   {.experimental: "parallel".}
+
+  proc threadedEcho(s: string, i: int) =
+    echo(s, " ", $i)
 
   proc useParallel() =
     parallel:
       for i in 0..4:
-        echo "echo in parallel"
+        spawn threadedEcho("echo in parallel", i)
+
+  useParallel()
 
 
 As a top level statement, the experimental pragma enables a feature for the
@@ -6384,6 +6487,39 @@ generates:
   struct mybitfield {
     unsigned int flag:1;
   };
+
+
+Align pragma
+------------
+
+The `align`:idx: pragma is for variables and object field members. It
+modifies the alignment requirement of the entity being declared. The
+argument must be a constant power of 2. Valid non-zero
+alignments that are weaker than nother align pragmas on the same
+declaration are ignored. Alignments that are weaker that the
+alignment requirement of the type are ignored.
+
+.. code-block:: Nim
+
+   type
+     sseType = object
+       sseData {.align(16).}: array[4,float32]
+
+     # every object will be aligned to 128-byte boundary
+     Data = object
+       x: char
+       cacheline {.align(128).}: array[128, char] # over-aligned array of char,
+
+   proc main() =
+     echo "sizeof(Data) = ", sizeof(Data), " (1 byte + 127 bytes padding + 128-byte array)"
+     # output: sizeof(Data) = 256 (1 byte + 127 bytes padding + 128-byte array)
+     echo "alignment of sseType is ", alignof(sseType)
+     # output: alignment of sseType is 16
+     var d {.align(2048).}: Data # this instance of data is aligned even stricter
+
+   main()
+
+This pragma has no effect for the JS backend.
 
 
 Volatile pragma
@@ -6465,18 +6601,31 @@ The ``link`` pragma can be used to link an additional file with the project:
 
 PassC pragma
 ------------
-The ``passC`` pragma can be used to pass additional parameters to the C
-compiler like you would using the commandline switch ``--passC``:
+The ``passc`` pragma can be used to pass additional parameters to the C
+compiler like you would using the commandline switch ``--passc``:
 
 .. code-block:: Nim
-  {.passC: "-Wall -Werror".}
+  {.passc: "-Wall -Werror".}
 
 Note that you can use ``gorge`` from the `system module <system.html>`_ to
 embed parameters from an external command that will be executed
 during semantic analysis:
 
 .. code-block:: Nim
-  {.passC: gorge("pkg-config --cflags sdl").}
+  {.passc: gorge("pkg-config --cflags sdl").}
+
+
+LocalPassc pragma
+-----------------
+The ``localPassc`` pragma can be used to pass additional parameters to the C
+compiler, but only for the C/C++ file that is produced from the Nim module
+the pragma resides in:
+
+.. code-block:: Nim
+  # Module A.nim
+  # Produces: A.nim.cpp
+  {.localPassc: "-Wall -Werror".} # Passed when compiling A.nim.cpp
+
 
 PassL pragma
 ------------
@@ -6597,15 +6746,6 @@ pragmas this allows *sloppy* interfacing with libraries written in C++:
 The compiler needs to be told to generate C++ (command ``cpp``) for
 this to work. The conditional symbol ``cpp`` is defined when the compiler
 emits C++ code.
-
-
-ImportJs pragma
----------------
-
-Similar to the `importcpp pragma for C++ <#foreign-function-interface-importc-pragma>`_,
-the ``importjs`` pragma can be used to import Javascript methods or
-symbols in general. The generated code then uses the Javascript method
-calling syntax: ``obj.method(arg)``.
 
 Namespaces
 ~~~~~~~~~~
@@ -6787,6 +6927,15 @@ Produces:
 .. code-block:: C
 
   std::vector<int>::iterator x;
+
+
+ImportJs pragma
+---------------
+
+Similar to the `importcpp pragma for C++ <#foreign-function-interface-importc-pragma>`_,
+the ``importjs`` pragma can be used to import Javascript methods or
+symbols in general. The generated code then uses the Javascript method
+calling syntax: ``obj.method(arg)``.
 
 
 ImportObjC pragma
@@ -7005,13 +7154,13 @@ spelled*:
   proc printf(formatstr: cstring) {.header: "<stdio.h>", importc: "printf", varargs.}
 
 Note that this pragma has been abused in the past to also work in the
-js backand for js objects and functions. : Other backends do provide
+js backend for js objects and functions. : Other backends do provide
 the same feature under the same name. Also, when the target language
 is not set to C, other pragmas are available:
 
  * `importcpp <manual.html#implementation-specific-pragmas-importcpp-pragma>`_
  * `importobjc <manual.html#implementation-specific-pragmas-importobjc-pragma>`_
- * `importjs <manul.html#implementation-specific-pragmas-importjs-pragma>`_
+ * `importjs <manual.html#implementation-specific-pragmas-importjs-pragma>`_
 
 .. code-block:: Nim
   proc p(s: cstring) {.importc: "prefix$1".}

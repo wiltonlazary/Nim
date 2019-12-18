@@ -146,7 +146,7 @@ proc optionalIsGood(em: var Emitter; pos, currentLen: int): bool =
 
 proc lenOfNextTokens(em: Emitter; pos: int): int =
   result = 0
-  for i in 1 ..< em.tokens.len-pos:
+  for i in 1..<em.tokens.len-pos:
     if em.kinds[pos+i] in {ltCrucialNewline, ltSplittingNewline, ltOptionalNewline}: break
     inc result, em.tokens[pos+i].len
 
@@ -160,13 +160,11 @@ proc guidingInd(em: Emitter; pos: int): int =
     inc i
   result = -1
 
-proc closeEmitter*(em: var Emitter) =
+proc renderTokens*(em: var Emitter): string =
+  ## Render Emitter tokens to a string of code
   template defaultCase() =
     content.add em.tokens[i]
     inc lineLen, em.tokens[i].len
-
-  let outFile = em.config.absOutFile
-
   var content = newStringOfCap(16_000)
   var maxLhs = 0
   var lineLen = 0
@@ -243,6 +241,11 @@ proc closeEmitter*(em: var Emitter) =
       defaultCase()
     inc i
 
+  return content
+
+proc writeOut*(em: Emitter, content: string)  =
+  ## Write to disk
+  let outFile = em.config.absOutFile
   if fileExists(outFile) and readFile(outFile.string) == content:
     discard "do nothing, see #9499"
     return
@@ -252,6 +255,11 @@ proc closeEmitter*(em: var Emitter) =
     return
   f.llStreamWrite content
   llStreamClose(f)
+
+proc closeEmitter*(em: var Emitter) =
+  ## Renders emitter tokens and write to a file
+  let content = renderTokens(em)
+  em.writeOut(content)
 
 proc wr(em: var Emitter; x: string; lt: LayoutToken) =
   em.tokens.add x
@@ -562,7 +570,7 @@ proc endsWith(em: Emitter; k: varargs[string]): bool =
   return true
 
 proc rfind(em: Emitter, t: string): int =
-  for i in 1 .. 5:
+  for i in 1..5:
     if em.tokens[^i] == t:
       return i
 

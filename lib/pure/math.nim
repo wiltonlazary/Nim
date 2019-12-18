@@ -35,7 +35,7 @@
 ##   # nan   (use `complex` module)
 ##
 ## This module is available for the `JavaScript target
-## <backends.html#the-javascript-target>`_.
+## <backends.html#backends-the-javascript-target>`_.
 ##
 ## **See also:**
 ## * `complex module<complex.html>`_ for complex numbers and their
@@ -43,11 +43,13 @@
 ## * `rationals module<rationals.html>`_ for rational numbers and their
 ##   mathematical operations
 ## * `fenv module<fenv.html>`_ for handling of floating-point rounding
-##   and exceptions (overflow, zero-devide, etc.)
+##   and exceptions (overflow, zero-divide, etc.)
 ## * `random module<random.html>`_ for fast and tiny random number generator
 ## * `mersenne module<mersenne.html>`_ for Mersenne twister random number generator
 ## * `stats module<stats.html>`_ for statistical analysis
 ## * `strformat module<strformat.html>`_ for formatting floats for print
+## * `system module<system.html>`_ Some very basic and trivial math operators
+##   are on system directly, to name a few ``shr``, ``shl``, ``xor``, ``clamp``, etc.
 
 
 include "system/inclrtl"
@@ -85,7 +87,9 @@ proc fac*(n: int): int =
     doAssert fac(4) == 24
     doAssert fac(10) == 3628800
   const factTable =
-    when sizeof(int) == 4:
+    when sizeof(int) == 2:
+      createFactTable[5]()
+    elif sizeof(int) == 4:
       createFactTable[13]()
     else:
       createFactTable[21]()
@@ -99,21 +103,23 @@ when defined(Posix) and not defined(genode):
   {.passl: "-lm".}
 
 const
-  PI* = 3.1415926535897932384626433        ## The circle constant PI (Ludolph's number)
-  TAU* = 2.0 * PI                          ## The circle constant TAU (= 2 * PI)
-  E* = 2.71828182845904523536028747        ## Euler's number
+  PI* = 3.1415926535897932384626433          ## The circle constant PI (Ludolph's number)
+  TAU* = 2.0 * PI                            ## The circle constant TAU (= 2 * PI)
+  E* = 2.71828182845904523536028747          ## Euler's number
 
-  MaxFloat64Precision* = 16                ## Maximum number of meaningful digits
-                                           ## after the decimal point for Nim's
-                                           ## ``float64`` type.
-  MaxFloat32Precision* = 8                 ## Maximum number of meaningful digits
-                                           ## after the decimal point for Nim's
-                                           ## ``float32`` type.
-  MaxFloatPrecision* = MaxFloat64Precision ## Maximum number of
-                                           ## meaningful digits
-                                           ## after the decimal point
-                                           ## for Nim's ``float`` type.
-  RadPerDeg = PI / 180.0                   ## Number of radians per degree
+  MaxFloat64Precision* = 16                  ## Maximum number of meaningful digits
+                                             ## after the decimal point for Nim's
+                                             ## ``float64`` type.
+  MaxFloat32Precision* = 8                   ## Maximum number of meaningful digits
+                                             ## after the decimal point for Nim's
+                                             ## ``float32`` type.
+  MaxFloatPrecision* = MaxFloat64Precision   ## Maximum number of
+                                             ## meaningful digits
+                                             ## after the decimal point
+                                             ## for Nim's ``float`` type.
+  MinFloatNormal* = 2.225073858507201e-308   ## Smallest normal number for Nim's
+                                             ## ``float`` type. (= 2^-1022).
+  RadPerDeg = PI / 180.0                     ## Number of radians per degree
 
 type
   FloatClass* = enum ## Describes the class a floating point value belongs to.
@@ -136,6 +142,7 @@ proc classify*(x: float): FloatClass =
     doAssert classify(0.0) == fcZero
     doAssert classify(0.3/0.0) == fcInf
     doAssert classify(-0.3/0.0) == fcNegInf
+    doAssert classify(5.0e-324) == fcSubnormal
 
   # JavaScript and most C compilers have no classify:
   if x == 0.0:
@@ -147,8 +154,9 @@ proc classify*(x: float): FloatClass =
     if x > 0.0: return fcInf
     else: return fcNegInf
   if x != x: return fcNan
+  if abs(x) < MinFloatNormal:
+    return fcSubnormal
   return fcNormal
-  # XXX: fcSubnormal is not detected!
 
 proc isPowerOfTwo*(x: int): bool {.noSideEffect.} =
   ## Returns ``true``, if ``x`` is a power of two, ``false`` otherwise.
@@ -1060,6 +1068,19 @@ proc gcd*(x, y: SomeInteger): SomeInteger =
     x -= y
   y shl shift
 
+proc gcd*[T](x: openArray[T]): T {.since: (1, 1).} =
+  ## Computes the greatest common (positive) divisor of the elements of ``x``.
+  ##
+  ## See also:
+  ## * `gcd proc <#gcd,T,T>`_ for integer version
+  runnableExamples:
+    doAssert gcd(@[13.5, 9.0]) == 4.5
+  result = x[0]
+  var i = 1
+  while i < x.len:
+    result = gcd(result, x[i])
+    inc(i)
+
 proc lcm*[T](x, y: T): T =
   ## Computes the least common multiple of ``x`` and ``y``.
   ##
@@ -1070,7 +1091,18 @@ proc lcm*[T](x, y: T): T =
     doAssert lcm(13, 39) == 39
   x div gcd(x, y) * y
 
-
+proc lcm*[T](x: openArray[T]): T {.since: (1, 1).} =
+  ## Computes the least common multiple of the elements of ``x``.
+  ##
+  ## See also:
+  ## * `gcd proc <#gcd,T,T>`_ for integer version
+  runnableExamples:
+    doAssert lcm(@[24, 30]) == 120
+  result = x[0]
+  var i = 1
+  while i < x.len:
+    result = lcm(result, x[i])
+    inc(i)
 
 when isMainModule and not defined(JS) and not windowsCC89:
   # Check for no side effect annotation

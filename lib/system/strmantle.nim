@@ -14,7 +14,7 @@ proc cmpStrings(a, b: string): int {.inline, compilerproc.} =
   let blen = b.len
   let minlen = min(alen, blen)
   if minlen > 0:
-    result = c_memcmp(unsafeAddr a[0], unsafeAddr b[0], minlen.csize)
+    result = c_memcmp(unsafeAddr a[0], unsafeAddr b[0], cast[csize_t](minlen))
     if result == 0:
       result = alen - blen
   else:
@@ -304,3 +304,12 @@ proc `$`*(x: uint64): string {.noSideEffect, raises: [].} =
     let half = i div 2
     # Reverse
     for t in 0 .. half-1: swap(result[t], result[i-t-1])
+
+when defined(gcDestructors):
+  proc GC_getStatistics*(): string =
+    result = "[GC] total memory: "
+    result.addInt getTotalMem()
+    result.add "\n[GC] occupied memory: "
+    result.addInt getOccupiedMem()
+    result.add '\n'
+    #"[GC] cycle collections: " & $gch.stat.cycleCollections & "\n" &

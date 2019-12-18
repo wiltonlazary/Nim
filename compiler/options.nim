@@ -81,10 +81,15 @@ type                          # please make sure we have under 32 options
     optNoNimblePath
     optHotCodeReloading
     optDynlibOverrideAll
-    optNimV2
+    optSeqDestructors         # active if the implementation uses the new
+                              # string/seq implementation based on destructors
+    optTinyRtti               # active if we use the new "tiny RTTI"
+                              # implementation
+    optOwnedRefs              # active if the Nim compiler knows about 'owned'.
     optMultiMethods
     optNimV019
     optBenchmarkVM            # Enables cpuTime() in the VM
+    optProduceAsm             # produce assembler code
 
   TGlobalOptions* = set[TGlobalOption]
 
@@ -111,14 +116,15 @@ type
     cmdJsonScript             # compile a .json build file
   TStringSeq* = seq[string]
   TGCMode* = enum             # the selected GC
-    gcUnselected, gcNone, gcBoehm, gcRegions, gcMarkAndSweep, gcDestructors,
+    gcUnselected, gcNone, gcBoehm, gcRegions, gcMarkAndSweep, gcArc, gcOrc,
+    gcHooks,
     gcRefc, gcV2, gcGo
     # gcRefc and the GCs that follow it use a write barrier,
     # as far as usesWriteBarrier() is concerned
 
   IdeCmd* = enum
     ideNone, ideSug, ideCon, ideDef, ideUse, ideDus, ideChk, ideMod,
-    ideHighlight, ideOutline, ideKnown, ideMsg
+    ideHighlight, ideOutline, ideKnown, ideMsg, ideProject
 
   Feature* = enum  ## experimental features; DO NOT RENAME THESE!
     implicitDeref,
@@ -141,6 +147,10 @@ type
       ## Allows to modify a NimNode where the type has already been
       ## flagged with nfSem. If you actually do this, it will cause
       ## bugs.
+    checkUnsignedConversions
+      ## Historically and especially in version 1.0.0 of the language
+      ## conversions to unsigned numbers were checked. In 1.0.4 they
+      ## are not anymore.
 
   SymbolFilesOption* = enum
     disabledSf, writeOnlySf, readOnlySf, v2Sf
@@ -224,12 +234,13 @@ type
                              ## symbols are always guaranteed to be style
                              ## insensitive. Otherwise hell would break lose.
     packageCache*: StringTableRef
+    nimblePaths*: seq[AbsoluteDir]
     searchPaths*: seq[AbsoluteDir]
     lazyPaths*: seq[AbsoluteDir]
     outFile*: RelativeFile
     outDir*: AbsoluteDir
     prefixDir*, libpath*, nimcacheDir*: AbsoluteDir
-    dllOverrides, moduleOverrides*: StringTableRef
+    dllOverrides, moduleOverrides*, cfileSpecificOptions*: StringTableRef
     projectName*: string # holds a name like 'nim'
     projectPath*: AbsoluteDir # holds a path like /home/alice/projects/nim/compiler/
     projectFull*: AbsoluteFile # projectPath/projectName
@@ -337,6 +348,7 @@ proc newConfigRef*(): ConfigRef =
     libpath: AbsoluteDir"", nimcacheDir: AbsoluteDir"",
     dllOverrides: newStringTable(modeCaseInsensitive),
     moduleOverrides: newStringTable(modeStyleInsensitive),
+    cfileSpecificOptions: newStringTable(modeCaseSensitive),
     projectName: "", # holds a name like 'nim'
     projectPath: AbsoluteDir"", # holds a path like /home/alice/projects/nim/compiler/
     projectFull: AbsoluteFile"", # projectPath/projectName
@@ -410,7 +422,7 @@ proc isDefined*(conf: ConfigRef; symbol: string): bool =
     of "mswindows", "win32": result = conf.target.targetOS == osWindows
     of "macintosh":
       result = conf.target.targetOS in {osMacos, osMacosx, osIos}
-    of "osx":
+    of "osx", "macosx":
       result = conf.target.targetOS in {osMacosx, osIos}
     of "sunos": result = conf.target.targetOS == osSolaris
     of "nintendoswitch":
@@ -525,21 +537,26 @@ proc shortenDir*(conf: ConfigRef; dir: string): string {.
   ## returns the interesting part of a dir
   var prefix = conf.projectPath.string & DirSep
   if startsWith(dir, prefix):
-    return substr(dir, len(prefix))
+    return substr(dir, prefix.len)
   prefix = getPrefixDir(conf).string & DirSep
   if startsWith(dir, prefix):
-    return substr(dir, len(prefix))
+    return substr(dir, prefix.len)
   result = dir
 
 proc removeTrailingDirSep*(path: string): string =
-  if (len(path) > 0) and (path[len(path) - 1] == DirSep):
-    result = substr(path, 0, len(path) - 2)
+  if (path.len > 0) and (path[^1] == DirSep):
+    result = substr(path, 0, path.len - 2)
   else:
     result = path
 
 proc disableNimblePath*(conf: ConfigRef) =
   incl conf.globalOptions, optNoNimblePath
   conf.lazyPaths.setLen(0)
+  conf.nimblePaths.setLen(0)
+
+proc clearNimblePath*(conf: ConfigRef) =
+  conf.lazyPaths.setLen(0)
+  conf.nimblePaths.setLen(0)
 
 include packagehandling
 
@@ -569,9 +586,16 @@ proc pathSubs*(conf: ConfigRef; p, config: string): string =
     "projectname", conf.projectName,
     "projectpath", conf.projectPath.string,
     "projectdir", conf.projectPath.string,
-    "nimcache", getNimcacheDir(conf).string])
-  if "~/" in result:
-    result = result.replace("~/", home & '/')
+    "nimcache", getNimcacheDir(conf).string]).expandTilde
+
+iterator nimbleSubs*(conf: ConfigRef; p: string): string =
+  let pl = p.toLowerAscii
+  if "$nimblepath" in pl or "$nimbledir" in pl:
+    for i in countdown(conf.nimblePaths.len-1, 0):
+      let nimblePath = removeTrailingDirSep(conf.nimblePaths[i].string)
+      yield p % ["nimblepath", nimblePath, "nimbledir", nimblePath]
+  else:
+    yield p
 
 proc toGeneratedFile*(conf: ConfigRef; path: AbsoluteFile,
                       ext: string): AbsoluteFile =
@@ -619,7 +643,7 @@ template patchModule(conf: ConfigRef) {.dirty.} =
       let ov = conf.moduleOverrides[key]
       if ov.len > 0: result = AbsoluteFile(ov)
 
-proc findFile*(conf: ConfigRef; f: string; suppressStdlib = false): AbsoluteFile {.procvar.} =
+proc findFile*(conf: ConfigRef; f: string; suppressStdlib = false): AbsoluteFile =
   if f.isAbsolute:
     result = if f.existsFile: AbsoluteFile(f) else: AbsoluteFile""
   else:
@@ -662,21 +686,40 @@ proc findModule*(conf: ConfigRef; modulename, currentModule: string): AbsoluteFi
 
 proc findProjectNimFile*(conf: ConfigRef; pkg: string): string =
   const extensions = [".nims", ".cfg", ".nimcfg", ".nimble"]
-  var candidates: seq[string] = @[]
-  var dir = pkg
+  var
+    candidates: seq[string] = @[]
+    dir = pkg
+    prev = dir
+    nimblepkg = ""
+  let pkgname = pkg.lastPathPart()
   while true:
-    for k, f in os.walkDir(dir, relative=true):
+    for k, f in os.walkDir(dir, relative = true):
       if k == pcFile and f != "config.nims":
         let (_, name, ext) = splitFile(f)
         if ext in extensions:
           let x = changeFileExt(dir / name, ".nim")
           if fileExists(x):
             candidates.add x
+          if ext == ".nimble":
+            if nimblepkg.len == 0:
+              nimblepkg = name
+              # Since nimble packages can have their source in a subfolder,
+              # check the last folder we were in for a possible match.
+              if dir != prev:
+                let x = prev / x.extractFilename()
+                if fileExists(x):
+                  candidates.add x
+            else:
+              # If we found more than one nimble file, chances are that we
+              # missed the real project file, or this is an invalid nimble
+              # package. Either way, bailing is the better choice.
+              return ""
+    let pkgname = if nimblepkg.len > 0: nimblepkg else: pkgname
     for c in candidates:
-      # nim-foo foo  or  foo  nfoo
-      if (pkg in c) or (c in pkg): return c
-    if candidates.len >= 1:
+      if pkgname in c.extractFilename(): return c
+    if candidates.len > 0:
       return candidates[0]
+    prev = dir
     dir = parentDir(dir)
     if dir == "": break
   return ""
@@ -709,6 +752,7 @@ proc parseIdeCmd*(s: string): IdeCmd =
   of "outline": ideOutline
   of "known": ideKnown
   of "msg": ideMsg
+  of "project": ideProject
   else: ideNone
 
 proc `$`*(c: IdeCmd): string =
@@ -725,6 +769,7 @@ proc `$`*(c: IdeCmd): string =
   of ideOutline: "outline"
   of ideKnown: "known"
   of ideMsg: "msg"
+  of ideProject: "project"
 
 proc floatInt64Align*(conf: ConfigRef): int16 =
   ## Returns either 4 or 8 depending on reasons.

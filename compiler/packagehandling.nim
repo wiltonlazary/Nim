@@ -39,20 +39,20 @@ proc getPackageName*(conf: ConfigRef; path: string): string =
     if parents <= 0: break
 
 proc fakePackageName*(conf: ConfigRef; path: AbsoluteFile): string =
+  # Convert `path` so that 2 modules with same name
+  # in different directory get different name and they can be
+  # placed in a directory.
   # foo-#head/../bar becomes @foo-@hhead@s..@sbar
-  result = "@m" & relativeTo(path, conf.projectPath, '/').string.multiReplace({"/": "@s", "#": "@h", "@": "@@", ":": "@c"})
+  result = "@m" & relativeTo(path, conf.projectPath).string.multiReplace({$os.DirSep: "@s", $os.AltSep: "@s", "#": "@h", "@": "@@", ":": "@c"})
 
 proc demanglePackageName*(path: string): string =
   result = path.multiReplace({"@@": "@", "@h": "#", "@s": "/", "@m": "", "@c": ":"})
 
 proc withPackageName*(conf: ConfigRef; path: AbsoluteFile): AbsoluteFile =
   let x = getPackageName(conf, path.string)
-  if x.len == 0:
-    result = path
+  let (p, file, ext) = path.splitFile
+  if x == "stdlib":
+    # Hot code reloading now relies on 'stdlib_system' names etc.
+    result = p / RelativeFile((x & '_' & file) & ext)
   else:
-    let (p, file, ext) = path.splitFile
-    if x == "stdlib":
-      # Hot code reloading now relies on 'stdlib_system' names etc.
-      result = p / RelativeFile((x & '_' & file) & ext)
-    else:
-      result = p / RelativeFile(fakePackageName(conf, path))
+    result = p / RelativeFile(fakePackageName(conf, path))

@@ -1,3 +1,12 @@
+#
+#
+#            Nim's Runtime Library
+#        (c) Copyright 2019 Andreas Rumpf
+#
+#    See the file "copying.txt", included in this
+#    distribution, for details about the copyright.
+#
+
 #[
 In this new runtime we simplify the object layouts a bit: The runtime type
 information is only accessed for the objects that have it and it's always
@@ -25,11 +34,16 @@ hash of ``package & "." & module & "." & name`` to save space.
 
 ]#
 
+const
+  rcIncrement = 0b1000 # so that lowest 3 bits are not touched
+  rcMask = 0b111
+
 type
   RefHeader = object
     rc: int # the object header is now a single RC field.
-            # we could remove it in non-debug builds but this seems
-            # unwise.
+            # we could remove it in non-debug builds for the 'owned ref'
+            # design but this seems unwise.
+  Cell = ptr RefHeader
 
 template `+!`(p: pointer, s: int): pointer =
   cast[pointer](cast[int](p) +% s)
@@ -37,8 +51,11 @@ template `+!`(p: pointer, s: int): pointer =
 template `-!`(p: pointer, s: int): pointer =
   cast[pointer](cast[int](p) -% s)
 
-template head(p: pointer): ptr RefHeader =
-  cast[ptr RefHeader](cast[int](p) -% sizeof(RefHeader))
+template head(p: pointer): Cell =
+  cast[Cell](cast[int](p) -% sizeof(RefHeader))
+
+const
+  traceCollector = defined(traceArc)
 
 var allocs*: int
 
@@ -47,7 +64,7 @@ proc nimNewObj(size: int): pointer {.compilerRtl.} =
   when defined(nimscript):
     discard
   elif defined(useMalloc):
-    var orig = c_malloc(s)
+    var orig = c_malloc(cuint s)
     nimZeroMem(orig, s)
     result = orig +! sizeof(RefHeader)
   else:
@@ -56,28 +73,24 @@ proc nimNewObj(size: int): pointer {.compilerRtl.} =
     atomicInc allocs
   else:
     inc allocs
+  when traceCollector:
+    cprintf("[Allocated] %p\n", result -! sizeof(RefHeader))
 
-proc nimDecWeakRef(p: pointer) {.compilerRtl.} =
-  when hasThreadSupport:
-    atomicDec head(p).rc
-  else:
-    dec head(p).rc
+proc nimDecWeakRef(p: pointer) {.compilerRtl, inl.} =
+  dec head(p).rc, rcIncrement
 
-proc nimIncWeakRef(p: pointer) {.compilerRtl.} =
-  when hasThreadSupport:
-    atomicInc head(p).rc
-  else:
-    inc head(p).rc
+proc nimIncRef(p: pointer) {.compilerRtl, inl.} =
+  inc head(p).rc, rcIncrement
+  #cprintf("[INCREF] %p\n", p)
 
 proc nimRawDispose(p: pointer) {.compilerRtl.} =
   when not defined(nimscript):
-    when hasThreadSupport:
-      let hasDanglingRefs = atomicLoadN(addr head(p).rc, ATOMIC_RELAXED) != 0
-    else:
-      let hasDanglingRefs = head(p).rc != 0
-    if hasDanglingRefs:
-      cstderr.rawWrite "[FATAL] dangling references exist\n"
-      quit 1
+    when traceCollector:
+      cprintf("[Freed] %p\n", p -! sizeof(RefHeader))
+    when defined(nimOwnedEnabled):
+      if head(p).rc >= rcIncrement:
+        cstderr.rawWrite "[FATAL] dangling references exist\n"
+        quit 1
     when defined(useMalloc):
       c_free(p -! sizeof(RefHeader))
     else:
@@ -106,11 +119,48 @@ proc nimDestroyAndDispose(p: pointer) {.compilerRtl.} =
       cstderr.rawWrite "has destructor!\n"
   nimRawDispose(p)
 
-proc isObj(obj: PNimType, subclass: cstring): bool {.compilerproc.} =
+when defined(gcOrc):
+  include cyclicrefs_v2
+
+proc nimDecRefIsLast(p: pointer): bool {.compilerRtl, inl.} =
+  if p != nil:
+    var cell = head(p)
+    if (cell.rc and not rcMask) == 0:
+      result = true
+      #cprintf("[DESTROY] %p\n", p)
+    else:
+      dec cell.rc, rcIncrement
+      # According to Lins it's correct to do nothing else here.
+      #cprintf("[DeCREF] %p\n", p)
+
+proc GC_unref*[T](x: ref T) =
+  ## New runtime only supports this operation for 'ref T'.
+  if nimDecRefIsLast(cast[pointer](x)):
+    # XXX this does NOT work for virtual destructors!
+    `=destroy`(x[])
+    nimRawDispose(cast[pointer](x))
+
+proc GC_ref*[T](x: ref T) =
+  ## New runtime only supports this operation for 'ref T'.
+  if x != nil: nimIncRef(cast[pointer](x))
+
+template GC_fullCollect* =
+  ## Forces a full garbage collection pass. With ``--gc:arc`` a nop.
+  discard
+
+template setupForeignThreadGc* =
+  ## With ``--gc:arc`` a nop.
+  discard
+
+template tearDownForeignThreadGc* =
+  ## With ``--gc:arc`` a nop.
+  discard
+
+proc isObj(obj: PNimType, subclass: cstring): bool {.compilerRtl, inl.} =
   proc strstr(s, sub: cstring): cstring {.header: "<string.h>", importc.}
 
   result = strstr(obj.name, subclass) != nil
 
-proc chckObj(obj: PNimType, subclass: cstring) {.compilerproc.} =
+proc chckObj(obj: PNimType, subclass: cstring) {.compilerRtl.} =
   # checks if obj is of type subclass:
   if not isObj(obj, subclass): sysFatal(ObjectConversionError, "invalid object conversion")
