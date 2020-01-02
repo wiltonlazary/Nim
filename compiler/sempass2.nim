@@ -167,9 +167,7 @@ proc guardDotAccess(a: PEffects; n: PNode) =
     guardGlobal(a, n, g)
 
 proc makeVolatile(a: PEffects; s: PSym) {.inline.} =
-  template compileToCpp(a): untyped =
-    a.config.cmd == cmdCompileToCpp or sfCompileToCpp in getModule(a.owner).flags
-  if a.inTryStmt > 0 and not compileToCpp(a):
+  if a.inTryStmt > 0 and a.config.exc == excSetjmp:
     incl(s.flags, sfVolatile)
 
 proc initVar(a: PEffects, n: PNode; volatileCheck: bool) =
@@ -708,6 +706,8 @@ proc track(tracked: PEffects, n: PNode) =
   of nkCallKinds:
     # p's effects are ours too:
     var a = n[0]
+    #if canRaise(a):
+    #  echo "this can raise ", tracked.config $ n.info
     let op = a.typ
     if n.typ != nil:
       if tracked.owner.kind != skMacro and n.typ.skipTypes(abstractVar).kind != tyOpenArray:

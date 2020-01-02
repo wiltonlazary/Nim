@@ -67,6 +67,8 @@ proc nimNewObj(size: int): pointer {.compilerRtl.} =
     var orig = c_malloc(cuint s)
     nimZeroMem(orig, s)
     result = orig +! sizeof(RefHeader)
+  elif compileOption("threads"):
+    result = allocShared0(s) +! sizeof(RefHeader)
   else:
     result = alloc0(s) +! sizeof(RefHeader)
   when hasThreadSupport:
@@ -93,6 +95,8 @@ proc nimRawDispose(p: pointer) {.compilerRtl.} =
         quit 1
     when defined(useMalloc):
       c_free(p -! sizeof(RefHeader))
+    elif compileOption("threads"):
+      deallocShared(p -! sizeof(RefHeader))
     else:
       dealloc(p -! sizeof(RefHeader))
     if allocs > 0:
@@ -107,7 +111,7 @@ proc nimRawDispose(p: pointer) {.compilerRtl.} =
 template dispose*[T](x: owned(ref T)) = nimRawDispose(cast[pointer](x))
 #proc dispose*(x: pointer) = nimRawDispose(x)
 
-proc nimDestroyAndDispose(p: pointer) {.compilerRtl.} =
+proc nimDestroyAndDispose(p: pointer) {.compilerRtl, raises: [].} =
   let d = cast[ptr PNimType](p)[].destructor
   if d != nil: cast[DestructorProc](d)(p)
   when false:

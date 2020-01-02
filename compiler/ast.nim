@@ -1763,7 +1763,7 @@ proc toObject*(typ: PType): PType =
 proc isImportedException*(t: PType; conf: ConfigRef): bool =
   assert t != nil
 
-  if optNoCppExceptions in conf.globalOptions:
+  if conf.exc != excCpp:
     return false
 
   let base = t.skipTypes({tyAlias, tyPtr, tyDistinct, tyGenericInst})
@@ -1832,3 +1832,24 @@ proc addParam*(procType: PType; param: PSym) =
 template destructor*(t: PType): PSym = t.attachedOps[attachedDestructor]
 template assignment*(t: PType): PSym = t.attachedOps[attachedAsgn]
 template asink*(t: PType): PSym = t.attachedOps[attachedSink]
+
+const magicsThatCanRaise = {
+  mNone, mSlurp, mStaticExec, mParseExprToAst, mParseStmtToAst, mEcho}
+
+proc canRaiseConservative*(fn: PNode): bool =
+  if fn.kind == nkSym and fn.sym.magic notin magicsThatCanRaise:
+    result = false
+  else:
+    result = true
+
+proc canRaise*(fn: PNode): bool =
+  if fn.kind == nkSym and (fn.sym.magic notin magicsThatCanRaise or
+      {sfImportc, sfInfixCall} * fn.sym.flags == {sfImportc} or
+      sfGeneratedOp in fn.sym.flags):
+    result = false
+  elif fn.kind == nkSym and fn.sym.magic == mEcho:
+    result = true
+  else:
+    result = fn.typ != nil and fn.typ.n != nil and ((fn.typ.n[0].len < effectListLen) or
+      (fn.typ.n[0][exceptionEffects] != nil and
+      fn.typ.n[0][exceptionEffects].safeLen > 0))
