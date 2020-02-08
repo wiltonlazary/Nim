@@ -413,6 +413,8 @@ proc processSwitch*(switch, arg: string, pass: TCmdLinePass, info: TLineInfo;
   of "docseesrcurl":
     expectArg(conf, switch, arg, pass, info)
     conf.docSeeSrcUrl = arg
+  of "docroot":
+    conf.docRoot = if arg.len == 0: "@default" else: arg
   of "mainmodule", "m":
     discard "allow for backwards compatibility, but don't do anything"
   of "define", "d":
@@ -469,9 +471,8 @@ proc processSwitch*(switch, arg: string, pass: TCmdLinePass, info: TLineInfo;
         defineSymbol(conf.symbols, "gcmarkandsweep")
       of "destructors", "arc":
         conf.selectedGC = gcArc
-        when true:
-          if conf.cmd != cmdCompileToCpp:
-            conf.exc = excGoto
+        if conf.cmd != cmdCompileToCpp:
+          conf.exc = excGoto
         defineSymbol(conf.symbols, "gcdestructors")
         defineSymbol(conf.symbols, "gcarc")
         incl conf.globalOptions, optSeqDestructors
@@ -481,9 +482,8 @@ proc processSwitch*(switch, arg: string, pass: TCmdLinePass, info: TLineInfo;
           defineSymbol(conf.symbols, "nimV2")
       of "orc":
         conf.selectedGC = gcOrc
-        when true:
-          if conf.cmd != cmdCompileToCpp:
-            conf.exc = excGoto
+        if conf.cmd != cmdCompileToCpp:
+          conf.exc = excGoto
         defineSymbol(conf.symbols, "gcdestructors")
         defineSymbol(conf.symbols, "gcorc")
         incl conf.globalOptions, optSeqDestructors
@@ -678,6 +678,9 @@ proc processSwitch*(switch, arg: string, pass: TCmdLinePass, info: TLineInfo;
       setTarget(conf.target, conf.target.targetOS, cpu)
   of "run", "r":
     processOnOffSwitchG(conf, {optRun}, arg, pass, info)
+  of "maxloopiterationsvm":
+    expectArg(conf, switch, arg, pass, info)
+    conf.maxLoopIterationsVM = parseInt(arg)
   of "errormax":
     expectArg(conf, switch, arg, pass, info)
     # Note: `nim check` (etc) can overwrite this.
