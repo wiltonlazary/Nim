@@ -48,7 +48,8 @@ type
                          # used on some platforms
     asmStmtFrmt: string, # format of ASM statement
     structStmtFmt: string, # Format for struct statement
-    produceAsm: string,   # Format how to produce assembler listings
+    produceAsm: string,  # Format how to produce assembler listings
+    cppXsupport: string, # what to do to enable C++X support
     props: TInfoCCProps] # properties of the C compiler
 
 
@@ -85,6 +86,7 @@ compiler gcc:
     asmStmtFrmt: "asm($1);$n",
     structStmtFmt: "$1 $3 $2 ", # struct|union [packed] $name
     produceAsm: gnuAsmListing,
+    cppXsupport: "-std=gnu++14 -funsigned-char",
     props: {hasSwitchRange, hasComputedGoto, hasCpp, hasGcGuard, hasGnuAsm,
             hasAttribute})
 
@@ -111,6 +113,7 @@ compiler nintendoSwitchGCC:
     asmStmtFrmt: "asm($1);$n",
     structStmtFmt: "$1 $3 $2 ", # struct|union [packed] $name
     produceAsm: gnuAsmListing,
+    cppXsupport: "-std=gnu++14 -funsigned-char",
     props: {hasSwitchRange, hasComputedGoto, hasCpp, hasGcGuard, hasGnuAsm,
             hasAttribute})
 
@@ -135,13 +138,23 @@ compiler clang:
   result.compilerExe = "clang"
   result.cppCompiler = "clang++"
 
+# Zig cc (Clang) C/C++ Compiler
+compiler zig:
+  result = clang() # Uses settings from llvmGcc
+
+  result.name = "zig"
+  result.compilerExe = "zig"
+  result.cppCompiler = "zig"
+  result.compileTmpl = "cc " & result.compileTmpl
+  result.linkTmpl = "cc " & result.linkTmpl
+
 # Microsoft Visual C/C++ Compiler
 compiler vcc:
   result = (
     name: "vcc",
     objExt: "obj",
-    optSpeed: " /Ogityb2 /G7 ",
-    optSize: " /O1 /G7 ",
+    optSpeed: " /Ogityb2 ",
+    optSize: " /O1 ",
     compilerExe: "cl",
     cppCompiler: "cl",
     compileTmpl: "/c$vccplatform $options $include /Fo$objfile $file",
@@ -158,6 +171,7 @@ compiler vcc:
     asmStmtFrmt: "__asm{$n$1$n}$n",
     structStmtFmt: "$3$n$1 $2",
     produceAsm: "/Fa$asmfile",
+    cppXsupport: "",
     props: {hasCpp, hasAssume, hasDeclspec})
 
 compiler clangcl:
@@ -204,6 +218,7 @@ compiler lcc:
     asmStmtFrmt: "_asm{$n$1$n}$n",
     structStmtFmt: "$1 $2",
     produceAsm: "",
+    cppXsupport: "",
     props: {})
 
 # Borland C Compiler
@@ -229,6 +244,7 @@ compiler bcc:
     asmStmtFrmt: "__asm{$n$1$n}$n",
     structStmtFmt: "$1 $2",
     produceAsm: "",
+    cppXsupport: "",
     props: {hasSwitchRange, hasComputedGoto, hasCpp, hasGcGuard,
             hasAttribute})
 
@@ -255,6 +271,7 @@ compiler dmc:
     asmStmtFrmt: "__asm{$n$1$n}$n",
     structStmtFmt: "$3$n$1 $2",
     produceAsm: "",
+    cppXsupport: "",
     props: {hasCpp})
 
 # Watcom C Compiler
@@ -280,6 +297,7 @@ compiler wcc:
     asmStmtFrmt: "__asm{$n$1$n}$n",
     structStmtFmt: "$1 $2",
     produceAsm: "",
+    cppXsupport: "",
     props: {hasCpp})
 
 # Tiny C Compiler
@@ -305,6 +323,7 @@ compiler tcc:
     asmStmtFrmt: "asm($1);$n",
     structStmtFmt: "$1 $2",
     produceAsm: gnuAsmListing,
+    cppXsupport: "",
     props: {hasSwitchRange, hasComputedGoto, hasGnuAsm})
 
 # Pelles C Compiler
@@ -331,6 +350,7 @@ compiler pcc:
     asmStmtFrmt: "__asm{$n$1$n}$n",
     structStmtFmt: "$1 $2",
     produceAsm: "",
+    cppXsupport: "",
     props: {})
 
 # Your C Compiler
@@ -356,6 +376,7 @@ compiler ucc:
     asmStmtFrmt: "__asm{$n$1$n}$n",
     structStmtFmt: "$1 $2",
     produceAsm: "",
+    cppXsupport: "",
     props: {})
 
 const
@@ -364,6 +385,7 @@ const
     nintendoSwitchGCC(),
     llvmGcc(),
     clang(),
+    zig(),
     lcc(),
     bcc(),
     dmc(),
@@ -389,8 +411,10 @@ proc nameToCC*(name: string): TSystemCC =
       return i
   result = ccNone
 
-proc listCCnames(): seq[string] =
+proc listCCnames(): string =
+  result = ""
   for i in succ(ccNone)..high(TSystemCC):
+    if i > succ(ccNone): result.add ", "
     result.add CC[i].name
 
 proc isVSCompatible*(conf: ConfigRef): bool =
@@ -426,8 +450,7 @@ proc getConfigVar(conf: ConfigRef; c: TSystemCC, suffix: string): string =
 proc setCC*(conf: ConfigRef; ccname: string; info: TLineInfo) =
   conf.cCompiler = nameToCC(ccname)
   if conf.cCompiler == ccNone:
-    let ccList = listCCnames().join(", ")
-    localError(conf, info, "unknown C compiler: '$1'. Available options are: $2" % [ccname, ccList])
+    localError(conf, info, "unknown C compiler: '$1'. Available options are: $2" % [ccname, listCCnames()])
   conf.compileOptions = getConfigVar(conf, conf.cCompiler, ".options.always")
   conf.linkOptions = ""
   conf.cCompilerPath = getConfigVar(conf, conf.cCompiler, ".path")
@@ -576,8 +599,11 @@ proc needsExeExt(conf: ConfigRef): bool {.inline.} =
   result = (optGenScript in conf.globalOptions and conf.target.targetOS == osWindows) or
            (conf.target.hostOS == osWindows)
 
+proc useCpp(conf: ConfigRef; cfile: AbsoluteFile): bool =
+  conf.cmd == cmdCompileToCpp and not cfile.string.endsWith(".c")
+
 proc getCompilerExe(conf: ConfigRef; compiler: TSystemCC; cfile: AbsoluteFile): string =
-  result = if conf.cmd == cmdCompileToCpp and not cfile.string.endsWith(".c"):
+  result = if useCpp(conf, cfile):
              CC[compiler].cppCompiler
            else:
              CC[compiler].compilerExe
@@ -597,6 +623,11 @@ proc getCompileCFileCmd*(conf: ConfigRef; cfile: Cfile,
   # We produce files like module.nim.cpp, so the absolute Nim filename is not
   # cfile.name but `cfile.cname.changeFileExt("")`:
   var options = cFileSpecificOptions(conf, cfile.nimname, cfile.cname.changeFileExt("").string)
+  if useCpp(conf, cfile.cname):
+    # needs to be prepended so that --passc:-std=c++17 can override default.
+    # we could avoid allocation by making cFileSpecificOptions inplace
+    options = CC[c].cppXsupport & ' ' & options
+
   var exe = getConfigVar(conf, c, ".exe")
   if exe.len == 0: exe = getCompilerExe(conf, c, cfile.cname)
 
@@ -1064,6 +1095,9 @@ proc writeJsonBuildInstructions*(conf: ConfigRef) =
     lit ",\L\"extraCmds\": "
     lit $(%* conf.extraCmds)
 
+    lit ",\L\"stdinInput\": "
+    lit $(%* conf.projectIsStdin)
+
     if optRun in conf.globalOptions or isDefined(conf, "nimBetterRun"):
       lit ",\L\"cmdline\": "
       str conf.commandLine
@@ -1090,6 +1124,13 @@ proc changeDetectedViaJsonBuildInstructions*(conf: ConfigRef; projectfile: Absol
       return true
     if hashNimExe() != data["nimexe"].getStr:
       return true
+    if not data.hasKey("stdinInput"): return true
+    let stdinInput = data["stdinInput"].getBool
+    if conf.projectIsStdin or stdinInput:
+      # could optimize by returning false if stdin input was the same,
+      # but I'm not sure how to get full stding input
+      return true
+
     let depfilesPairs = data["depfiles"]
     doAssert depfilesPairs.kind == JArray
     for p in depfilesPairs:
