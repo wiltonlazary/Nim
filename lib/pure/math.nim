@@ -52,11 +52,11 @@
 ##   are on system directly, to name a few ``shr``, ``shl``, ``xor``, ``clamp``, etc.
 
 
-include "system/inclrtl"
+import std/private/since
 {.push debugger: off.} # the user does not want to trace a part
                        # of the standard library!
 
-import bitops
+import bitops, fenv
 
 proc binom*(n, k: int): int {.noSideEffect.} =
   ## Computes the `binomial coefficient <https://en.wikipedia.org/wiki/Binomial_coefficient>`_.
@@ -158,6 +158,29 @@ proc classify*(x: float): FloatClass =
     return fcSubnormal
   return fcNormal
 
+proc almostEqual*[T: SomeFloat](x, y: T; unitsInLastPlace: Natural = 4): bool {.
+      since: (1, 5), inline, noSideEffect.} =
+  ## Checks if two float values are almost equal, using
+  ## `machine epsilon <https://en.wikipedia.org/wiki/Machine_epsilon>`_.
+  ##
+  ## `unitsInLastPlace` is the max number of
+  ## `units in last place <https://en.wikipedia.org/wiki/Unit_in_the_last_place>`_
+  ## difference tolerated when comparing two numbers. The larger the value, the
+  ## more error is allowed. A ``0`` value means that two numbers must be exactly the
+  ## same to be considered equal.
+  ##
+  ## The machine epsilon has to be scaled to the magnitude of the values used
+  ## and multiplied by the desired precision in ULPs unless the difference is
+  ## subnormal.
+  ##
+  # taken from: https://en.cppreference.com/w/cpp/types/numeric_limits/epsilon
+  runnableExamples:
+    doAssert almostEqual(3.141592653589793, 3.1415926535897936)
+    doAssert almostEqual(1.6777215e7'f32, 1.6777216e7'f32)
+  let diff = abs(x - y)
+  result = diff <= epsilon(T) * abs(x + y) * T(unitsInLastPlace) or
+      diff < minimumPositiveValue(T)
+
 proc isPowerOfTwo*(x: int): bool {.noSideEffect.} =
   ## Returns ``true``, if ``x`` is a power of two, ``false`` otherwise.
   ##
@@ -195,17 +218,6 @@ proc nextPowerOfTwo*(x: int): int {.noSideEffect.} =
   result = result or (result shr 2)
   result = result or (result shr 1)
   result += 1 + ord(x <= 0)
-
-proc countBits32*(n: int32): int {.noSideEffect, deprecated:
-  "Deprecated since v0.20.0; use 'bitops.countSetBits' instead".} =
-  runnableExamples:
-    doAssert countBits32(7) == 3
-    doAssert countBits32(8) == 1
-    doAssert countBits32(15) == 4
-    doAssert countBits32(16) == 1
-    doAssert countBits32(17) == 2
-
-  bitops.countSetBits(n)
 
 proc sum*[T](x: openArray[T]): T {.noSideEffect.} =
   ## Computes the sum of the elements in ``x``.
@@ -611,13 +623,6 @@ when not defined(js): # C
       ##  echo gamma(4.0)  # 6.0
       ##  echo gamma(11.0) # 3628800.0
       ##  echo gamma(-1.0) # nan
-    proc tgamma*(x: float32): float32
-      {.deprecated: "Deprecated since v0.19.0; use 'gamma' instead",
-          importc: "tgammaf", header: "<math.h>".}
-    proc tgamma*(x: float64): float64
-      {.deprecated: "Deprecated since v0.19.0; use 'gamma' instead",
-          importc: "tgamma", header: "<math.h>".}
-      ## The gamma function
     proc lgamma*(x: float32): float32 {.importc: "lgammaf", header: "<math.h>".}
     proc lgamma*(x: float64): float64 {.importc: "lgamma", header: "<math.h>".}
       ## Computes the natural log of the gamma function for ``x``.
@@ -750,12 +755,6 @@ when not defined(js): # C
       ##  echo trunc(PI) # 3.0
       ##  echo trunc(-1.85) # -1.0
 
-  proc fmod*(x, y: float32): float32 {.deprecated: "Deprecated since v0.19.0; use 'mod' instead",
-      importc: "fmodf", header: "<math.h>".}
-  proc fmod*(x, y: float64): float64 {.deprecated: "Deprecated since v0.19.0; use 'mod' instead",
-      importc: "fmod", header: "<math.h>".}
-    ## Computes the remainder of ``x`` divided by ``y``.
-
   proc `mod`*(x, y: float32): float32 {.importc: "fmodf", header: "<math.h>".}
   proc `mod`*(x, y: float64): float64 {.importc: "fmod", header: "<math.h>".}
     ## Computes the modulo operation for float values (the remainder of ``x`` divided by ``y``).
@@ -792,8 +791,7 @@ else: # JS
     ##  ( 6.5 mod -2.5) ==  1.5
     ##  (-6.5 mod -2.5) == -1.5
 
-proc round*[T: float32|float64](x: T, places: int): T {.
-    deprecated: "use strformat module instead".} =
+proc round*[T: float32|float64](x: T, places: int): T =
   ## Decimal rounding on a binary floating point number.
   ##
   ## This function is NOT reliable. Floating point numbers cannot hold
@@ -982,7 +980,7 @@ proc sgn*[T: SomeNumber](x: T): int {.inline.} =
 {.pop.}
 {.pop.}
 
-proc `^`*[T](x: T, y: Natural): T =
+proc `^`*[T: SomeNumber](x: T, y: Natural): T =
   ## Computes ``x`` to the power ``y``.
   ##
   ## Exponent ``y`` must be non-negative, use
@@ -1111,7 +1109,6 @@ when isMainModule and not defined(js) and not windowsCC89:
 
   # check gamma function
   assert(gamma(5.0) == 24.0) # 4!
-  assert($tgamma(5.0) == $24.0) # 4!
   assert(lgamma(1.0) == 0.0) # ln(1.0) == 0.0
   assert(erf(6.0) > erf(5.0))
   assert(erfc(6.0) < erfc(5.0))
@@ -1133,20 +1130,6 @@ when isMainModule:
     doAssert round(-54.652) ==~ -55.0
     doAssert round(-54.352) ==~ -54.0
     doAssert round(0.0) ==~ 0.0
-    # Round to positive decimal places
-    doAssert round(-547.652, 1) ==~ -547.7
-    doAssert round(547.652, 1) ==~ 547.7
-    doAssert round(-547.652, 2) ==~ -547.65
-    doAssert round(547.652, 2) ==~ 547.65
-    # Round to negative decimal places
-    doAssert round(547.652, -1) ==~ 550.0
-    doAssert round(547.652, -2) ==~ 500.0
-    doAssert round(547.652, -3) ==~ 1000.0
-    doAssert round(547.652, -4) ==~ 0.0
-    doAssert round(-547.652, -1) ==~ -550.0
-    doAssert round(-547.652, -2) ==~ -500.0
-    doAssert round(-547.652, -3) ==~ -1000.0
-    doAssert round(-547.652, -4) ==~ 0.0
 
   block: # splitDecimal() tests
     doAssert splitDecimal(54.674).intpart ==~ 54.0
@@ -1205,7 +1188,7 @@ when isMainModule:
   block: # fac() tests
     try:
       discard fac(-1)
-    except AssertionError:
+    except AssertionDefect:
       discard
 
     doAssert fac(0) == 1

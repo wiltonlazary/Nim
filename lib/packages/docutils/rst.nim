@@ -305,15 +305,15 @@ proc whichMsgClass*(k: MsgKind): MsgClass =
   else: assert false, "msgkind does not fit naming scheme"
 
 proc defaultMsgHandler*(filename: string, line, col: int, msgkind: MsgKind,
-                        arg: string) {.procvar.} =
+                        arg: string) =
   let mc = msgkind.whichMsgClass
   let a = messages[msgkind] % arg
   let message = "$1($2, $3) $4: $5" % [filename, $line, $col, $mc, a]
   if mc == mcError: raise newException(EParseError, message)
   else: writeLine(stdout, message)
 
-proc defaultFindFile*(filename: string): string {.procvar.} =
-  if existsFile(filename): result = filename
+proc defaultFindFile*(filename: string): string =
+  if fileExists(filename): result = filename
   else: result = ""
 
 proc newSharedState(options: RstParseOptions,
@@ -328,7 +328,7 @@ proc newSharedState(options: RstParseOptions,
 
 proc findRelativeFile(p: RstParser; filename: string): string =
   result = p.filename.splitFile.dir / filename
-  if not existsFile(result):
+  if not fileExists(result):
     result = p.s.findFile(filename)
 
 proc rstMessage(p: RstParser, msgKind: MsgKind, arg: string) =
@@ -507,6 +507,7 @@ proc isInlineMarkupEnd(p: RstParser, markup: string): bool =
   if not result:
     return                    # Rule 4:
   result = (p.tok[p.idx + 1].kind in {tkIndent, tkWhite, tkEof}) or
+      (markup in ["``", "`"] and p.tok[p.idx + 1].kind in {tkIndent, tkWhite, tkWord, tkEof}) or
       (p.tok[p.idx + 1].symbol[0] in
       {'\'', '\"', ')', ']', '}', '>', '-', '/', '\\', ':', '.', ',', ';', '!',
        '?', '_'})
@@ -522,6 +523,7 @@ proc isInlineMarkupStart(p: RstParser, markup: string): bool =
   if not result:
     return                    # Rule 1:
   result = (p.idx == 0) or (p.tok[p.idx - 1].kind in {tkIndent, tkWhite}) or
+      (markup in ["``", "`"] and p.tok[p.idx - 1].kind in {tkIndent, tkWhite, tkWord}) or
       (p.tok[p.idx - 1].symbol[0] in
       {'\'', '\"', '(', '[', '{', '<', '-', '/', ':', '_'})
   if not result:
@@ -1102,6 +1104,8 @@ proc whichSection(p: RstParser): RstNodeKind =
   of tkPunct:
     if isMarkdownHeadline(p):
       result = rnHeadline
+    elif p.tok[p.idx].symbol == "```":
+      result = rnCodeBlock
     elif match(p, tokenAfterNewline(p), "ai"):
       result = rnHeadline
     elif p.tok[p.idx].symbol == "::":

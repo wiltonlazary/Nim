@@ -11,8 +11,8 @@
 ##
 ## This HTTP server has not been designed to be used in production, but
 ## for testing applications locally. Because of this, when deploying your
-## application you should use a reverse proxy (for example nginx) instead of
-## allowing users to connect directly to this server.
+## application in production you should use a reverse proxy (for example nginx) 
+## instead of allowing users to connect directly to this server.
 ##
 ## Basic usage
 ## ===========
@@ -105,8 +105,9 @@ proc respond*(req: Request, code: HttpCode, content: string,
     msg.add("Content-Length: ")
     # this particular way saves allocations:
     msg.addInt content.len
-  
-  msg.add "\c\L\c\L"
+    msg.add "\c\L"
+
+  msg.add "\c\L"
   msg.add(content)
   result = req.client.send(msg)
 

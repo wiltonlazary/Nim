@@ -44,7 +44,7 @@
 ## * `std/sha1 module <sha1.html>`_ for a sha1 encoder and decoder
 ## * `tables module <tables.html>`_ for hash tables
 
-include "system/inclrtl"
+import std/private/since
 
 type
   Hash* = int ## A hash value. Hash tables using these values should
@@ -97,9 +97,12 @@ proc hiXorLo(a, b: uint64): uint64 {.inline.} =
     when Hash.sizeof < 8:
       result = hiXorLoFallback64(a, b)
     elif defined(gcc) or defined(llvm_gcc) or defined(clang):
-      {.emit: """__uint128_t r = a; r *= b; `result` = (r >> 64) ^ r;""".}
+      {.emit: """__uint128_t r = `a`; r *= `b`; `result` = (r >> 64) ^ r;""".}
     elif defined(windows) and not defined(tcc):
-      {.emit: """a = _umul128(a, b, &b); `result` = a ^ b;""".}
+      proc umul128(a, b: uint64, c: ptr uint64): uint64 {.importc: "_umul128", header: "intrin.h".}
+      var b = b
+      let c = umul128(a, b, addr b)
+      result = c xor b
     else:
       result = hiXorLoFallback64(a, b)
 
@@ -174,16 +177,16 @@ proc hash*[T: proc](x: T): Hash {.inline.} =
   else:
     result = hash(pointer(x))
 
-proc hashIdentity*[T: Ordinal](x: T): Hash {.inline, since: (1, 3).} =
+proc hashIdentity*[T: Ordinal|enum](x: T): Hash {.inline, since: (1, 3).} =
   ## The identity hash.  I.e. ``hashIdentity(x) = x``.
   cast[Hash](ord(x))
 
 when defined(nimIntHash1):
-  proc hash*[T: Ordinal](x: T): Hash {.inline.} =
+  proc hash*[T: Ordinal|enum](x: T): Hash {.inline.} =
     ## Efficient hashing of integers.
     cast[Hash](ord(x))
 else:
-  proc hash*[T: Ordinal](x: T): Hash {.inline.} =
+  proc hash*[T: Ordinal|enum](x: T): Hash {.inline.} =
     ## Efficient hashing of integers.
     hashWangYi1(uint64(ord(x)))
 
