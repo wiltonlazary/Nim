@@ -64,7 +64,10 @@ lib/**/*.html
 testament.db
 /tests/**/*.json
 /tests/**/*.js
+
 /csources
+/csources_v1
+
 /dist/
 # /lib/fusion # fusion is now unbundled; `git status` should reveal if it's there so users can act on it
 
@@ -82,6 +85,7 @@ tweeter_test.db
 
 /tests/megatest.nim
 /tests/ic/*_temp.nim
+/tests/navigator/*_temp.nim
 
 
 /outputExpected.txt
