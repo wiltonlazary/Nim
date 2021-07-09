@@ -227,9 +227,6 @@ when defined(windows):
     # But we cannot call printf directly as the string might contain \0.
     # So we have to loop over all the sections separated by potential \0s.
     var i = c_fprintf(f, "%s", s)
-    if i < 0:
-      if doRaise: raiseEIO("cannot write string to file")
-      return
     while i < s.len:
       if s[i] == '\0':
         let w = c_fputc('\0', f)
@@ -787,13 +784,6 @@ when declared(stdout):
                      not defined(nintendoswitch) and not defined(freertos) and
                      hostOS != "any"
 
-  const echoDoRaise = not defined(nimLegacyEchoNoRaise) and not defined(guiapp) # see PR #16366
-
-  template checkErrMaybe(succeeded: bool): untyped =
-    if not succeeded:
-      when echoDoRaise:
-        checkErr(stdout)
-
   proc echoBinSafe(args: openArray[string]) {.compilerproc.} =
     when defined(androidNDK):
       var s = ""
@@ -806,18 +796,20 @@ when declared(stdout):
         proc flockfile(f: File) {.importc, nodecl.}
         proc funlockfile(f: File) {.importc, nodecl.}
         flockfile(stdout)
-        defer: funlockfile(stdout)
       when defined(windows) and compileOption("threads"):
         acquireSys echoLock
-        defer: releaseSys echoLock
       for s in args:
         when defined(windows):
-          writeWindows(stdout, s, doRaise = echoDoRaise)
+          writeWindows(stdout, s)
         else:
-          checkErrMaybe(c_fwrite(s.cstring, cast[csize_t](s.len), 1, stdout) == s.len)
+          discard c_fwrite(s.cstring, cast[csize_t](s.len), 1, stdout)
       const linefeed = "\n"
-      checkErrMaybe(c_fwrite(linefeed.cstring, linefeed.len, 1, stdout) == linefeed.len)
-      checkErrMaybe(c_fflush(stdout) == 0)
+      discard c_fwrite(linefeed.cstring, linefeed.len, 1, stdout)
+      discard c_fflush(stdout)
+      when stdOutLock:
+        funlockfile(stdout)
+      when defined(windows) and compileOption("threads"):
+        releaseSys echoLock
 
 
 when defined(windows) and not defined(nimscript) and not defined(js):
@@ -912,14 +904,14 @@ iterator lines*(filename: string): string {.tags: [ReadIOEffect].} =
   ## If the file does not exist `IOError` is raised. The trailing newline
   ## character(s) are removed from the iterated lines. Example:
   ##
-  ## .. code-block:: nim
-  ##   import std/strutils
-  ##
-  ##   proc transformLetters(filename: string) =
-  ##     var buffer = ""
-  ##     for line in filename.lines:
-  ##       buffer.add(line.replace("a", "0") & '\n')
-  ##     writeFile(filename, buffer)
+  runnableExamples:
+    import std/strutils
+
+    proc transformLetters(filename: string) =
+      var buffer = ""
+      for line in filename.lines:
+        buffer.add(line.replace("a", "0") & '\n')
+      writeFile(filename, buffer)
   var f = open(filename, bufSize=8000)
   try:
     var res = newStringOfCap(80)
@@ -931,14 +923,13 @@ iterator lines*(f: File): string {.tags: [ReadIOEffect].} =
   ## Iterate over any line in the file `f`.
   ##
   ## The trailing newline character(s) are removed from the iterated lines.
-  ## Example:
   ##
-  ## .. code-block:: nim
-  ##   proc countZeros(filename: File): tuple[lines, zeros: int] =
-  ##     for line in filename.lines:
-  ##       for letter in line:
-  ##         if letter == '0':
-  ##           result.zeros += 1
-  ##       result.lines += 1
+  runnableExamples:
+    proc countZeros(filename: File): tuple[lines, zeros: int] =
+      for line in filename.lines:
+        for letter in line:
+          if letter == '0':
+            result.zeros += 1
+        result.lines += 1
   var res = newStringOfCap(80)
   while f.readLine(res): yield res

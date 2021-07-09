@@ -229,7 +229,7 @@ type
   TNodeKinds* = set[TNodeKind]
 
 type
-  TSymFlag* = enum    # 46 flags!
+  TSymFlag* = enum    # 47 flags!
     sfUsed,           # read access of sym (for warnings) or simply used
     sfExported,       # symbol is exported from module
     sfFromGeneric,    # symbol is instantiation of a generic; this is needed
@@ -499,7 +499,7 @@ type
     nfFirstWrite# this node is a first write
 
   TNodeFlags* = set[TNodeFlag]
-  TTypeFlag* = enum   # keep below 32 for efficiency reasons (now: ~40)
+  TTypeFlag* = enum   # keep below 32 for efficiency reasons (now: 43)
     tfVarargs,        # procedure has C styled varargs
                       # tyArray type represeting a varargs list
     tfNoSideEffect,   # procedure type does not allow side effects
@@ -566,6 +566,7 @@ type
       # (for importc types); type is fully specified, allowing to compute
       # sizeof, alignof, offsetof at CT
     tfExplicitCallConv
+    tfIsConstructor
 
   TTypeFlags* = set[TTypeFlag]
 
@@ -666,7 +667,7 @@ type
     mIsPartOf, mAstToStr, mParallel,
     mSwap, mIsNil, mArrToSeq,
     mNewString, mNewStringOfCap, mParseBiggestFloat,
-    mMove, mWasMoved, mDestroy,
+    mMove, mWasMoved, mDestroy, mTrace,
     mDefault, mUnown, mIsolate, mAccessEnv, mReset,
     mArray, mOpenArray, mRange, mSet, mSeq, mVarargs,
     mRef, mPtr, mVar, mDistinct, mVoid, mTuple,
@@ -910,7 +911,6 @@ type
     attachedAsgn,
     attachedSink,
     attachedTrace,
-    attachedDispose,
     attachedDeepCopy
 
   TType* {.acyclic.} = object of TIdObj # \
@@ -1407,7 +1407,7 @@ const
   MaxLockLevel* = 1000'i16
   UnknownLockLevel* = TLockLevel(1001'i16)
   AttachedOpToStr*: array[TTypeAttachedOp, string] = [
-    "=destroy", "=copy", "=sink", "=trace", "=dispose", "=deepcopy"]
+    "=destroy", "=copy", "=sink", "=trace", "=deepcopy"]
 
 proc `$`*(x: TLockLevel): string =
   if x.ord == UnspecifiedLockLevel.ord: result = "<unspecified>"
@@ -1886,6 +1886,26 @@ proc toObject*(typ: PType): PType =
   let t = typ.skipTypes({tyAlias, tyGenericInst})
   if t.kind == tyRef: t.lastSon
   else: typ
+
+proc toObjectFromRefPtrGeneric*(typ: PType): PType =
+  #[
+  See also `toObject`.
+  Finds the underlying `object`, even in cases like these:
+  type
+    B[T] = object f0: int
+    A1[T] = ref B[T]
+    A2[T] = ref object f1: int
+    A3 = ref object f2: int
+    A4 = object f3: int
+  ]#
+  result = typ
+  while true:
+    case result.kind
+    of tyGenericBody: result = result.lastSon
+    of tyRef, tyPtr, tyGenericInst, tyGenericInvocation, tyAlias: result = result[0]
+      # automatic dereferencing is deep, refs #18298.
+    else: break
+  assert result.sym != nil
 
 proc isImportedException*(t: PType; conf: ConfigRef): bool =
   assert t != nil
