@@ -96,6 +96,10 @@
 ##
 
 import std/private/since
+
+when defined(nimPreviewSlimSystem):
+  import std/[assertions, syncio]
+
 import asyncdispatch, nativesockets, net, os
 
 export SOBool
@@ -103,6 +107,7 @@ export SOBool
 # TODO: Remove duplication introduced by PR #4683.
 
 const defineSsl = defined(ssl) or defined(nimdoc)
+const useNimNetLite = defined(nimNetLite) or defined(freertos) or defined(zephyr)
 
 when defineSsl:
   import openssl
@@ -178,11 +183,12 @@ proc getLocalAddr*(socket: AsyncSocket): (string, Port) =
   ## This is high-level interface for `getsockname`:idx:.
   getLocalAddr(socket.fd, socket.domain)
 
-proc getPeerAddr*(socket: AsyncSocket): (string, Port) =
-  ## Get the socket's peer address and port number.
-  ##
-  ## This is high-level interface for `getpeername`:idx:.
-  getPeerAddr(socket.fd, socket.domain)
+when not useNimNetLite:
+  proc getPeerAddr*(socket: AsyncSocket): (string, Port) =
+    ## Get the socket's peer address and port number.
+    ##
+    ## This is high-level interface for `getpeername`:idx:.
+    getPeerAddr(socket.fd, socket.domain)
 
 proc newAsyncSocket*(domain, sockType, protocol: cint,
                      buffered = true,
@@ -397,7 +403,8 @@ proc recv*(socket: AsyncSocket, size: int,
   ## to be read then the future will complete with a value of `""`.
   if socket.isBuffered:
     result = newString(size)
-    shallow(result)
+    when not defined(nimSeqsV2):
+      shallow(result)
     let originalBufPos = socket.currPos
 
     if socket.bufLen == 0:
@@ -646,16 +653,16 @@ proc bindAddr*(socket: AsyncSocket, port = Port(0), address = "") {.
 
   var aiList = getAddrInfo(realaddr, port, socket.domain)
   if bindAddr(socket.fd, aiList.ai_addr, aiList.ai_addrlen.SockLen) < 0'i32:
-    freeaddrinfo(aiList)
+    freeAddrInfo(aiList)
     raiseOSError(osLastError())
-  freeaddrinfo(aiList)
+  freeAddrInfo(aiList)
 
 proc hasDataBuffered*(s: AsyncSocket): bool {.since: (1, 5).} =
   ## Determines whether an AsyncSocket has data buffered.
   # xxx dedup with std/net
   s.isBuffered and s.bufLen > 0 and s.currPos != s.bufLen
 
-when defined(posix):
+when defined(posix) and not useNimNetLite:
 
   proc connectUnix*(socket: AsyncSocket, path: string): owned(Future[void]) =
     ## Binds Unix socket to `path`.
@@ -857,7 +864,7 @@ proc sendTo*(socket: AsyncSocket, address: string, port: Port, data: string,
 
     it = it.ai_next
 
-  freeaddrinfo(aiList)
+  freeAddrInfo(aiList)
 
   if not success:
     if lastException != nil:

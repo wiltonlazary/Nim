@@ -16,8 +16,13 @@ import std/private/since
 
 import strutils
 
+when defined(nimPreviewSlimSystem):
+  import std/assertions
+
 when defined(windows):
   import winlean
+  when useWinUnicode and defined(nimPreviewSlimSystem):
+    import std/widestrs
   from os import absolutePath
 else:
   import os

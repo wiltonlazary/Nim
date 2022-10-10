@@ -51,7 +51,10 @@ Event parser output
 '''
 """
 
-import std/[strutils, streams, pegs]
+when defined(nimHasEffectsOf):
+  {.experimental: "strictEffects".}
+
+import std/[strutils, streams, pegs, assertions]
 
 const
   indent = "  "
@@ -154,6 +157,10 @@ block:
   proc pegsTest() =
     privateAccess(NonTerminal)
     privateAccess(Captures)
+
+    if "test" =~ peg"s <- {{\ident}}": # bug #19104
+      doAssert matches[0] == "test"
+      doAssert matches[1] == "test", $matches[1]
 
     doAssert escapePeg("abc''def'") == r"'abc'\x27\x27'def'\x27"
     doAssert match("(a b c)", peg"'(' @ ')'")

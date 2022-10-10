@@ -43,72 +43,28 @@ proc hashString(s: string): int {.compilerproc.} =
   h = h + h shl 15
   result = cast[int](h)
 
-proc addInt*(result: var string; x: int64) =
-  ## Converts integer to its string representation and appends it to `result`.
-  ##
-  ## .. code-block:: Nim
-  ##   var
-  ##     a = "123"
-  ##     b = 45
-  ##   a.addInt(b) # a <- "12345"
-  var num: uint64
+proc eqCstrings(a, b: cstring): bool {.inline, compilerproc.} =
+  if pointer(a) == pointer(b): result = true
+  elif a.isNil or b.isNil: result = false
+  else: result = c_strcmp(a, b) == 0
 
-  if x < 0:
-    if x == low(int64):
-      num = uint64(x)
-    else:
-      num = uint64(-x)
-    let base = result.len
-    setLen(result, base + 1)
-    result[base] = '-'
-  else:
-    num = uint64(x)
-  addIntImpl(result, num)
-
-proc nimIntToStr(x: int): string {.compilerRtl.} =
-  result = newStringOfCap(sizeof(x)*4)
-  result.addInt x
-
-proc addCstringN(result: var string, buf: cstring; buflen: int) =
-  # no nimvm support needed, so it doesn't need to be fast here either
-  let oldLen = result.len
-  let newLen = oldLen + buflen
-  result.setLen newLen
-  copyMem(result[oldLen].addr, buf, buflen)
-
-import formatfloat
-
-proc addFloat*(result: var string; x: float) =
-  ## Converts float to its string representation and appends it to `result`.
-  ##
-  ## .. code-block:: Nim
-  ##   var
-  ##     a = "123"
-  ##     b = 45.67
-  ##   a.addFloat(b) # a <- "12345.67"
-  when nimvm:
-    result.add $x
-  else:
-    var buffer {.noinit.}: array[65, char]
-    let n = writeFloatToBuffer(buffer, x)
-    result.addCstringN(cstring(buffer[0].addr), n)
-
-proc nimFloatToStr(f: float): string {.compilerproc.} =
-  result = newStringOfCap(8)
-  result.addFloat f
-
-when not defined(nimLegacyAddFloat) and not defined(nimscript) and
-    not defined(js) and defined(nimHasDragonBox):
-  import schubfach
-
-proc nimFloat32ToStr(f: float32): string {.compilerproc.} =
-  when declared(float32ToChars):
-    result = newString(65)
-    let L = float32ToChars(result, f, forceTrailingDotZero=true)
-    setLen(result, L)
-  else:
-    result = newStringOfCap(8)
-    result.addFloat f
+proc hashCstring(s: cstring): int {.compilerproc.} =
+  # the compiler needs exactly the same hash function!
+  # this used to be used for efficient generation of cstring case statements
+  if s.isNil: return 0
+  var h : uint = 0
+  var i = 0
+  while true:
+    let c = s[i]
+    if c == '\0': break
+    h = h + uint(c)
+    h = h + h shl 10
+    h = h xor (h shr 6)
+    inc i
+  h = h + h shl 3
+  h = h xor (h shr 11)
+  h = h + h shl 15
+  result = cast[int](h)
 
 proc c_strtod(buf: cstring, endptr: ptr cstring): float64 {.
   importc: "strtod", header: "<stdlib.h>", noSideEffect.}
@@ -252,15 +208,16 @@ proc nimParseBiggestFloat(s: string, number: var BiggestFloat,
   var ti = 0
   let maxlen = t.high - "e+000".len # reserve enough space for exponent
 
-  result = i - start
+  let endPos = i
+  result = endPos - start
   i = start
   # re-parse without error checking, any error should be handled by the code above.
-  if i < s.len and s[i] == '.': i.inc
-  while i < s.len and s[i] in {'0'..'9','+','-'}:
+  if i < endPos and s[i] == '.': i.inc
+  while i < endPos and s[i] in {'0'..'9','+','-'}:
     if ti < maxlen:
       t[ti] = s[i]; inc(ti)
     inc(i)
-    while i < s.len and s[i] in {'.', '_'}: # skip underscore and decimal point
+    while i < endPos and s[i] in {'.', '_'}: # skip underscore and decimal point
       inc(i)
 
   # insert exponent
@@ -279,10 +236,6 @@ proc nimParseBiggestFloat(s: string, number: var BiggestFloat,
 
 when defined(nimHasInvariant):
   {.pop.} # staticBoundChecks
-
-proc nimInt64ToStr(x: int64): string {.compilerRtl.} =
-  result = newStringOfCap(sizeof(x)*4)
-  result.addInt x
 
 proc nimBoolToStr(x: bool): string {.compilerRtl.} =
   return if x: "true" else: "false"

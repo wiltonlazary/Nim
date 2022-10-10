@@ -7,7 +7,7 @@ axc
 ...
 destroying GenericObj[T] GenericObj[system.int]
 test
-(allocCount: 13, deallocCount: 11)
+(allocCount: 12, deallocCount: 10)
 3'''
 """
 
@@ -137,7 +137,16 @@ proc xx(xml: string): MyObject =
 
 
 discard xx("test")
-echo getAllocStats() - s1
+
+# Windows has 1 extra allocation in `getEnv` - there it allocates parameter to
+# `_wgetenv` (WideCString). Therefore subtract by 1 to match other OSes'
+# allocation.
+when defined(windows):
+  import std/importutils
+  privateAccess(AllocStats)
+  echo getAllocStats() - s1 - AllocStats(allocCount: 1, deallocCount: 1)
+else:
+  echo getAllocStats() - s1
 
 # bug #13457
 var s = "abcde"

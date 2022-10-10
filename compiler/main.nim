@@ -22,6 +22,10 @@ import
   modules,
   modulegraphs, lineinfos, pathutils, vmprofiler
 
+
+when defined(nimPreviewSlimSystem):
+  import std/[syncio, assertions]
+
 import ic / [cbackend, integrity, navigator]
 from ic / ic import rodViewer
 
@@ -58,6 +62,11 @@ proc commandCheck(graph: ModuleGraph) =
   let conf = graph.config
   conf.setErrorMaxHighMaybe
   defineSymbol(conf.symbols, "nimcheck")
+  if optWasNimscript in conf.globalOptions:
+    defineSymbol(conf.symbols, "nimscript")
+    defineSymbol(conf.symbols, "nimconfig")
+  elif conf.backend == backendJs:
+    setTarget(conf.target, osJS, cpuJS)
   semanticPasses(graph)  # use an empty backend for semantic checking only
   compileProject(graph)
 
@@ -267,7 +276,8 @@ proc mainCommand*(graph: ModuleGraph) =
     var ret = if optUseNimcache in conf.globalOptions: getNimcacheDir(conf)
               else: conf.projectPath
     doAssert ret.string.isAbsolute # `AbsoluteDir` is not a real guarantee
-    if conf.cmd in cmdDocLike + {cmdRst2html, cmdRst2tex}: ret = ret / htmldocsDir
+    if conf.cmd in cmdDocLike + {cmdRst2html, cmdRst2tex, cmdMd2html, cmdMd2tex}:
+      ret = ret / htmldocsDir
     conf.outDir = ret
 
   ## process all commands
@@ -285,7 +295,7 @@ proc mainCommand*(graph: ModuleGraph) =
   of cmdDoc:
     docLikeCmd():
       conf.setNoteDefaults(warnLockLevel, false) # issue #13218
-      conf.setNoteDefaults(warnRedefinitionOfLabel, false) # issue #13218
+      conf.setNoteDefaults(warnRstRedefinitionOfLabel, false) # issue #13218
         # because currently generates lots of false positives due to conflation
         # of labels links in doc comments, e.g. for random.rand:
         #  ## * `rand proc<#rand,Rand,Natural>`_ that returns an integer
@@ -293,32 +303,33 @@ proc mainCommand*(graph: ModuleGraph) =
       commandDoc2(graph, HtmlExt)
       if optGenIndex in conf.globalOptions and optWholeProject in conf.globalOptions:
         commandBuildIndex(conf, $conf.outDir)
-  of cmdRst2html:
+  of cmdRst2html, cmdMd2html:
     # XXX: why are warnings disabled by default for rst2html and rst2tex?
-    for warn in [warnUnknownSubstitutionX, warnLanguageXNotSupported,
-                 warnFieldXNotSupported, warnRstStyle]:
+    for warn in rstWarnings:
       conf.setNoteDefaults(warn, true)
-    conf.setNoteDefaults(warnRedefinitionOfLabel, false) # similar to issue #13218
+    conf.setNoteDefaults(warnRstRedefinitionOfLabel, false) # similar to issue #13218
     when defined(leanCompiler):
       conf.quitOrRaise "compiler wasn't built with documentation generator"
     else:
       loadConfigs(DocConfig, cache, conf, graph.idgen)
-      commandRst2Html(cache, conf)
-  of cmdRst2tex, cmdDoc2tex:
-    for warn in [warnRedefinitionOfLabel, warnUnknownSubstitutionX,
-                 warnLanguageXNotSupported,
-                 warnFieldXNotSupported, warnRstStyle]:
+      commandRst2Html(cache, conf, preferMarkdown = (conf.cmd == cmdMd2html))
+  of cmdRst2tex, cmdMd2tex, cmdDoc2tex:
+    for warn in rstWarnings:
       conf.setNoteDefaults(warn, true)
     when defined(leanCompiler):
       conf.quitOrRaise "compiler wasn't built with documentation generator"
     else:
-      if conf.cmd == cmdRst2tex:
+      if conf.cmd in {cmdRst2tex, cmdMd2tex}:
         loadConfigs(DocTexConfig, cache, conf, graph.idgen)
-        commandRst2TeX(cache, conf)
+        commandRst2TeX(cache, conf, preferMarkdown = (conf.cmd == cmdMd2tex))
       else:
         docLikeCmd commandDoc2(graph, TexExt)
   of cmdJsondoc0: docLikeCmd commandJson(cache, conf)
-  of cmdJsondoc: docLikeCmd commandDoc2(graph, JsonExt)
+  of cmdJsondoc:
+    docLikeCmd():
+      commandDoc2(graph, JsonExt)
+      if optGenIndex in conf.globalOptions and optWholeProject in conf.globalOptions:
+        commandBuildIndexJson(conf, $conf.outDir)
   of cmdCtags: docLikeCmd commandTags(cache, conf)
   of cmdBuildindex: docLikeCmd commandBuildIndex(conf, $conf.projectFull, conf.outFile)
   of cmdGendepend: commandGenDepend(graph)
@@ -366,7 +377,8 @@ proc mainCommand*(graph: ModuleGraph) =
       msgWriteln(conf, "-- end of list --", {msgStdout, msgSkipHook})
 
       for it in conf.searchPaths: msgWriteln(conf, it.string)
-  of cmdCheck: commandCheck(graph)
+  of cmdCheck:
+    commandCheck(graph)
   of cmdParse:
     wantMainModule(conf)
     discard parseFile(conf.projectMainIdx, cache, conf)

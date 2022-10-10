@@ -7,6 +7,7 @@ import std/json
 from std/math import isNaN, signbit
 from std/fenv import epsilon
 from stdtest/testutils import whenRuntimeJs
+import std/[assertions, objectdollar]
 
 proc testRoundtrip[T](t: T, expected: string) =
   # checks that `T => json => T2 => json2` is such that json2 = json
@@ -44,7 +45,7 @@ proc `$`(a: MyEnum): string =
   if a == me2: "me2Modif"
   else: system.`$`(a)
 
-template fn() = 
+template fn() =
   block: # toJson, jsonTo
     type Foo = distinct float
     testRoundtrip('x', """120""")
@@ -311,6 +312,18 @@ template fn() =
       doAssert guide == AboutLifeUniverseAndEverythingElse(
         question: "6*9=?", answer: 42)
 
+      block refObject: #bug 17986
+        type A = ref object
+          case is_a: bool
+          of true:
+            a: int
+          else:
+            b: int
+
+        var a = A()
+        fromJson(a, """{"is_a": true, "a":1, "extra_key": 1}""".parseJson, Joptions(allowExtraKeys: true))
+        doAssert $a[] == "(is_a: true, a: 1)"
+
     block testAllowMissingKeys:
       var guide = AboutLifeUniverseAndEverythingElse(
         question: "6*9=?", answer: 54)
@@ -421,7 +434,7 @@ template fn() =
           """{"b": true, "bt": false, "btf": "test"}"""
         testRoundtrip(Variant(b: true, bt: true, btt: 'c')):
           """{"b": true, "bt": true, "btt": "c"}"""
-        
+
         # TODO: Add additional tests with missing and extra JSON keys, both when
         # allowed and forbidden analogous to the tests for the not nested
         # variant objects.

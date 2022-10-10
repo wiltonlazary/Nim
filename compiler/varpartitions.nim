@@ -32,6 +32,9 @@ import ast, types, lineinfos, options, msgs, renderer, typeallowed, modulegraphs
 from trees import getMagic, isNoSideEffectPragma, stupidStmtListExpr
 from isolation_check import canAlias
 
+when defined(nimPreviewSlimSystem):
+  import std/assertions
+
 type
   AbstractTime = distinct int
 
@@ -479,7 +482,7 @@ proc destMightOwn(c: var Partitions; dest: var VarIndex; n: PNode) =
         # calls do construct, what we construct must be destroyed,
         # so dest cannot be a cursor:
         dest.flags.incl ownsData
-      elif n.typ.kind in {tyLent, tyVar}:
+      elif n.typ.kind in {tyLent, tyVar} and n.len > 1:
         # we know the result is derived from the first argument:
         var roots: seq[(PSym, int)]
         allRoots(n[1], roots, RootEscapes)
@@ -491,7 +494,9 @@ proc destMightOwn(c: var Partitions; dest: var VarIndex; n: PNode) =
         # this list is subtle, we try to answer the question if after 'dest = f(src)'
         # there is a connection betwen 'src' and 'dest' so that mutations to 'src'
         # also reflect 'dest':
-        if magic in {mNone, mMove, mSlice, mAppendStrCh, mAppendStrStr, mAppendSeqElem, mArrToSeq}:
+        if magic in {mNone, mMove, mSlice,
+            mAppendStrCh, mAppendStrStr, mAppendSeqElem,
+            mArrToSeq, mOpenArrayToSeq}:
           for i in 1..<n.len:
             # we always have to assume a 'select(...)' like mechanism.
             # But at least we do filter out simple POD types from the
@@ -575,24 +580,33 @@ proc borrowingAsgn(c: var Partitions; dest, src: PNode) =
   if dest.kind == nkSym:
     if directViewType(dest.typ) != noView:
       borrowFrom(c, dest.sym, src)
-  elif dest.kind in {nkHiddenDeref, nkDerefExpr, nkBracketExpr}:
-    case directViewType(dest[0].typ)
-    of mutableView, immutableView:
-      # we do not borrow, but we use the view to mutate the borrowed
-      # location:
-      let viewOrigin = pathExpr(dest, c.owner)
-      if viewOrigin.kind == nkSym:
-        let vid = variableId(c, viewOrigin.sym)
+  else:
+    let viewOrigin = pathExpr(dest, c.owner)
+    if viewOrigin != nil and viewOrigin.kind == nkSym:
+      let viewSym = viewOrigin.sym
+      let directView = directViewType(dest[0].typ) # check something like result[first] = toOpenArray(s, first, last-1)
+                                                   # so we don't need to iterate the original type
+      let originSymbolView = directViewType(viewSym.typ) # find the original symbol which preserves the view type
+                                                    #  var foo: var Object = a
+                                                    #  foo.id = 777 # the type of foo is no view, so we need
+                                                    #  to check the original symbol
+      let viewSets = {directView, originSymbolView}
+
+      if viewSets * {mutableView, immutableView} != {}:
+        # we do not borrow, but we use the view to mutate the borrowed
+        # location:
+        let vid = variableId(c, viewSym)
         if vid >= 0:
           c.s[vid].flags.incl viewDoesMutate
-    #[of immutableView:
-      if dest.kind == nkBracketExpr and dest[0].kind == nkHiddenDeref and
-          mutableParameter(dest[0][0]):
-        discard "remains a mutable location anyhow"
+      #[of immutableView:
+        if dest.kind == nkBracketExpr and dest[0].kind == nkHiddenDeref and
+            mutableParameter(dest[0][0]):
+          discard "remains a mutable location anyhow"
+        else:
+          localError(c.g.config, dest.info, "attempt to mutate a borrowed location from an immutable view")
+          ]#
       else:
-        localError(c.g.config, dest.info, "attempt to mutate a borrowed location from an immutable view")
-        ]#
-    of noView: discard "nothing to do"
+        discard "nothing to do"
 
 proc containsPointer(t: PType): bool =
   proc wrap(t: PType): bool {.nimcall.} = t.kind in {tyRef, tyPtr}
@@ -647,13 +661,6 @@ proc deps(c: var Partitions; dest, src: PNode) =
                 when explainCursors: echo "D not a cursor ", d.sym, " reassignedTo ", c.s[srcid].reassignedTo
                 c.s[vid].flags.incl preventCursor
 
-const
-  nodesToIgnoreSet = {nkNone..pred(nkSym), succ(nkSym)..nkNilLit,
-    nkTypeSection, nkProcDef, nkConverterDef,
-    nkMethodDef, nkIteratorDef, nkMacroDef, nkTemplateDef, nkLambda, nkDo,
-    nkFuncDef, nkConstSection, nkConstDef, nkIncludeStmt, nkImportStmt,
-    nkExportStmt, nkPragma, nkCommentStmt, nkBreakState,
-    nkTypeOfExpr, nkMixinStmt, nkBindStmt}
 
 proc potentialMutationViaArg(c: var Partitions; n: PNode; callee: PType) =
   if constParameters in c.goals and tfNoSideEffect in callee.flags:
@@ -769,6 +776,11 @@ proc traverse(c: var Partitions; n: PNode) =
     #     mutate(graph)
     #     connect(graph, cursorVar)
     for child in n: traverse(c, child)
+
+    if n.kind == nkWhileStmt:
+      traverse(c, n[0])
+      # variables in while condition has longer alive time than local variables 
+      # in the while loop body
   else:
     for child in n: traverse(c, child)
 
@@ -855,7 +867,12 @@ proc computeLiveRanges(c: var Partitions; n: PNode) =
     #     connect(graph, cursorVar)
     inc c.inLoop
     for child in n: computeLiveRanges(c, child)
-    inc c.inLoop
+    dec c.inLoop
+
+    if n.kind == nkWhileStmt:
+      computeLiveRanges(c, n[0])
+      # variables in while condition has longer alive time than local variables 
+      # in the while loop body
   of nkElifBranch, nkElifExpr, nkElse, nkOfBranch:
     inc c.inConditional
     for child in n: computeLiveRanges(c, child)

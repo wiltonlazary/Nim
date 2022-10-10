@@ -4,6 +4,7 @@ discard """
 
 import std/tempfiles
 import std/[os, nre]
+import std/[assertions, syncio]
 
 const
   prefix = "D20210502T100442" # safety precaution to only affect files/dirs with this prefix
@@ -40,7 +41,7 @@ block: # createTempDir
 
     doAssert dirExists(dir1)
     doAssert dir1.lastPathPart.contains(re"^D20210502T100442(\w+).tmp$")
-    doAssert dir1.parentDir == getTempDir()
+    doAssert dir1.parentDir == getTempDir().normalizePathEnd()
 
   block:
     let dir3 = createTempDir(prefix, "_mytmp", ".")

@@ -13,6 +13,9 @@ import
   intsets, ast, astalgo, trees, msgs, strutils, platform, renderer, options,
   lineinfos, int128, modulegraphs, astmsgs
 
+when defined(nimPreviewSlimSystem):
+  import std/[assertions, formatfloat]
+
 type
   TPreferedDesc* = enum
     preferName, # default
@@ -682,7 +685,7 @@ proc typeToString(typ: PType, prefer: TPreferedDesc = preferName): string =
           elif t.len == 1: result.add(",")
         result.add(')')
     of tyPtr, tyRef, tyVar, tyLent:
-      result = typeToStr[t.kind]
+      result = if isOutParam(t): "out " else: typeToStr[t.kind]
       if t.len >= 2:
         setLen(result, result.len-1)
         result.add '['
@@ -896,6 +899,7 @@ type
     ExactConstraints
     ExactGcSafety
     AllowCommonBase
+    PickyCAliases  # be picky about the distinction between 'cint' and 'int32'
 
   TTypeCmpFlags* = set[TTypeCmpFlag]
 
@@ -1120,15 +1124,20 @@ proc sameTypeAux(x, y: PType, c: var TSameTypeClosure): bool =
     case c.cmp
     of dcEq: return false
     of dcEqIgnoreDistinct:
-      while a.kind == tyDistinct: a = a[0]
-      while b.kind == tyDistinct: b = b[0]
+      a = a.skipTypes({tyDistinct, tyGenericInst})
+      b = b.skipTypes({tyDistinct, tyGenericInst})
       if a.kind != b.kind: return false
     of dcEqOrDistinctOf:
-      while a.kind == tyDistinct: a = a[0]
+      a = a.skipTypes({tyDistinct, tyGenericInst})
       if a.kind != b.kind: return false
 
+  #[
+    The following code should not run in the case either side is an generic alias,
+    but it's not presently possible to distinguish the genericinsts from aliases of
+    objects ie `type A[T] = SomeObject`
+  ]#
   # this is required by tunique_type but makes no sense really:
-  if x.kind == tyGenericInst and IgnoreTupleFields notin c.flags:
+  if tyDistinct notin {x.kind, y.kind} and x.kind == tyGenericInst and IgnoreTupleFields notin c.flags:
     let
       lhs = x.skipGenericAlias
       rhs = y.skipGenericAlias
@@ -1144,6 +1153,13 @@ proc sameTypeAux(x, y: PType, c: var TSameTypeClosure): bool =
   of tyEmpty, tyChar, tyBool, tyNil, tyPointer, tyString, tyCstring,
      tyInt..tyUInt64, tyTyped, tyUntyped, tyVoid:
     result = sameFlags(a, b)
+    if result and PickyCAliases in c.flags:
+      # additional requirement for the caching of generics for importc'ed types:
+      # the symbols must be identical too:
+      let symFlagsA = if a.sym != nil: a.sym.flags else: {}
+      let symFlagsB = if b.sym != nil: b.sym.flags else: {}
+      if (symFlagsA+symFlagsB) * {sfImportc, sfExportc} != {}:
+        result = symFlagsA == symFlagsB
   of tyStatic, tyFromExpr:
     result = exprStructuralEquivalent(a.n, b.n) and sameFlags(a, b)
     if result and a.len == b.len and a.len == 1:
@@ -1195,7 +1211,7 @@ proc sameTypeAux(x, y: PType, c: var TSameTypeClosure): bool =
     result = sameChildrenAux(a, b, c)
     if result:
       if IgnoreTupleFields in c.flags:
-        result = a.flags * {tfVarIsPtr} == b.flags * {tfVarIsPtr}
+        result = a.flags * {tfVarIsPtr, tfIsOutParam} == b.flags * {tfVarIsPtr, tfIsOutParam}
       else:
         result = sameFlags(a, b)
     if result and ExactGcSafety in c.flags:
@@ -1356,6 +1372,13 @@ proc compatibleEffectsAux(se, re: PNode): bool =
       return false
   result = true
 
+proc hasIncompatibleEffect(se, re: PNode): bool =
+  if re.isNil: return false
+  for r in items(re):
+    for s in items(se):
+      if safeInheritanceDiff(r.typ, s.typ) != high(int):
+        return true
+
 type
   EffectsCompat* = enum
     efCompat
@@ -1364,10 +1387,15 @@ type
     efTagsDiffer
     efTagsUnknown
     efLockLevelsDiffer
+    efEffectsDelayed
+    efTagsIllegal
 
 proc compatibleEffects*(formal, actual: PType): EffectsCompat =
   # for proc type compatibility checking:
   assert formal.kind == tyProc and actual.kind == tyProc
+  #if tfEffectSystemWorkaround in actual.flags:
+  #  return efCompat
+
   if formal.n[0].kind != nkEffectList or
      actual.n[0].kind != nkEffectList:
     return efTagsUnknown
@@ -1391,9 +1419,25 @@ proc compatibleEffects*(formal, actual: PType): EffectsCompat =
       # spec requires some exception or tag, but we don't know anything:
       if real.len == 0: return efTagsUnknown
       let res = compatibleEffectsAux(st, real[tagEffects])
-      if not res: return efTagsDiffer
+      if not res:
+        #if tfEffectSystemWorkaround notin actual.flags:
+        return efTagsDiffer
+
+    let sn = spec[forbiddenEffects]
+    if not isNil(sn) and sn.kind != nkArgList:
+      if 0 == real.len:
+        return efTagsUnknown
+      elif hasIncompatibleEffect(sn, real[tagEffects]):
+        return efTagsIllegal
+
   if formal.lockLevel.ord < 0 or
       actual.lockLevel.ord <= formal.lockLevel.ord:
+
+    for i in 1 ..< min(formal.n.len, actual.n.len):
+      if formal.n[i].sym.flags * {sfEffectsDelayed} != actual.n[i].sym.flags * {sfEffectsDelayed}:
+        result = efEffectsDelayed
+        break
+
     result = efCompat
   else:
     result = efLockLevelsDiffer
@@ -1528,6 +1572,7 @@ proc getProcConvMismatch*(c: ConfigRef, f, a: PType, rel = isNone): (set[ProcCon
       of isInferred: result[1] = isInferredConvertible
       of isBothMetaConvertible: result[1] = isBothMetaConvertible
       elif result[1] != isNone: result[1] = isConvertible
+      else: result[0].incl pcmDifferentCallConv
     else:
       result[1] = isNone
       result[0].incl pcmDifferentCallConv
@@ -1563,6 +1608,25 @@ proc addPragmaAndCallConvMismatch*(message: var string, formal, actual: PType, c
     expectedPragmas.setLen(max(0, expectedPragmas.len - 2)) # Remove ", "
     message.add "\n  Pragma mismatch: got '{.$1.}', but expected '{.$2.}'." % [gotPragmas, expectedPragmas]
 
+proc processPragmaAndCallConvMismatch(msg: var string, formal, actual: PType, conf: ConfigRef) =
+  if formal.kind == tyProc and actual.kind == tyProc:
+    msg.addPragmaAndCallConvMismatch(formal, actual, conf)
+    case compatibleEffects(formal, actual)
+    of efCompat: discard
+    of efRaisesDiffer:
+      msg.add "\n.raise effects differ"
+    of efRaisesUnknown:
+      msg.add "\n.raise effect is 'can raise any'"
+    of efTagsDiffer:
+      msg.add "\n.tag effects differ"
+    of efTagsUnknown:
+      msg.add "\n.tag effect is 'any tag allowed'"
+    of efLockLevelsDiffer:
+      msg.add "\nlock levels differ"
+    of efEffectsDelayed:
+      msg.add "\n.effectsOf annotations differ"
+    of efTagsIllegal:
+      msg.add "\n.notTag catched an illegal effect"
 
 proc typeMismatch*(conf: ConfigRef; info: TLineInfo, formal, actual: PType, n: PNode) =
   if formal.kind != tyError and actual.kind != tyError:
@@ -1582,24 +1646,18 @@ proc typeMismatch*(conf: ConfigRef; info: TLineInfo, formal, actual: PType, n: P
       msg.add "\n"
     msg.add " but expected '$1'" % x
     if verbose: msg.addDeclaredLoc(conf, formal)
-
-    if formal.kind == tyProc and actual.kind == tyProc:
-      msg.addPragmaAndCallConvMismatch(formal, actual, conf)
-      case compatibleEffects(formal, actual)
-      of efCompat: discard
-      of efRaisesDiffer:
-        msg.add "\n.raise effects differ"
-      of efRaisesUnknown:
-        msg.add "\n.raise effect is 'can raise any'"
-      of efTagsDiffer:
-        msg.add "\n.tag effects differ"
-      of efTagsUnknown:
-        msg.add "\n.tag effect is 'any tag allowed'"
-      of efLockLevelsDiffer:
-        msg.add "\nlock levels differ"
-
-    if formal.kind == tyEnum and actual.kind == tyEnum:
-      msg.add "\nmaybe use `-d:nimLegacyConvEnumEnum` for a transition period"
+    var a = formal
+    var b = actual
+    if formal.kind == tyArray and actual.kind == tyArray:
+      a = formal[1]
+      b = actual[1]
+      processPragmaAndCallConvMismatch(msg, a, b, conf)
+    elif formal.kind == tySequence and actual.kind == tySequence:
+      a = formal[0]
+      b = actual[0]
+      processPragmaAndCallConvMismatch(msg, a, b, conf)
+    else:
+      processPragmaAndCallConvMismatch(msg, a, b, conf)
     localError(conf, info, msg)
 
 proc isTupleRecursive(t: PType, cycleDetector: var IntSet): bool =
@@ -1656,3 +1714,31 @@ proc isSinkTypeForParam*(t: PType): bool =
         result = false
       else:
         result = true
+
+proc lookupFieldAgain*(ty: PType; field: PSym): PSym =
+  var ty = ty
+  while ty != nil:
+    ty = ty.skipTypes(skipPtrs)
+    assert(ty.kind in {tyTuple, tyObject})
+    result = lookupInRecord(ty.n, field.name)
+    if result != nil: break
+    ty = ty[0]
+  if result == nil: result = field
+
+proc isCharArrayPtr*(t: PType; allowPointerToChar: bool): bool =
+  let t = t.skipTypes(abstractInst)
+  if t.kind == tyPtr:
+    let pointsTo = t[0].skipTypes(abstractInst)
+    case pointsTo.kind
+    of tyUncheckedArray:
+      result = pointsTo[0].kind == tyChar
+    of tyArray:
+      result = pointsTo[1].kind == tyChar and firstOrd(nil, pointsTo[0]) == 0 and
+        skipTypes(pointsTo[0], {tyRange}).kind in {tyInt..tyInt64}
+    of tyChar:
+      result = allowPointerToChar
+    else:
+      discard
+
+proc lacksMTypeField*(typ: PType): bool {.inline.} =
+  (typ.sym != nil and sfPure in typ.sym.flags) or tfFinal in typ.flags

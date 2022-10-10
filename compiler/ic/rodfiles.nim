@@ -16,6 +16,9 @@
 
 from typetraits import supportsCopyMem
 
+when defined(nimPreviewSlimSystem):
+  import std/[syncio, assertions]
+
 ## Overview
 ## ========
 ## `RodFile` represents a Rod File (versioned binary format), and the
@@ -34,8 +37,7 @@ from typetraits import supportsCopyMem
 ##
 ## Now read the bits below to understand what's missing.
 ##
-## Issues with the Example
-## ```````````````````````
+## ### Issues with the Example
 ## Missing Sections:
 ## This is a low level API, so headers and sections need to be stored and
 ## loaded by the user, see `storeHeader` & `loadHeader` and `storeSection` &

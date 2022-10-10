@@ -11,6 +11,10 @@ import os, tables, strutils, times, heapqueue, options, deques, cstrutils
 
 import system/stacktraces
 
+when defined(nimPreviewSlimSystem):
+  import std/objectdollar # for StackTraceEntry
+  import std/assertions
+
 # TODO: This shouldn't need to be included, but should ideally be exported.
 type
   CallbackFunc = proc () {.closure, gcsafe.}
@@ -93,7 +97,7 @@ proc setCallSoonProc*(p: (proc(cbproc: proc ()) {.gcsafe.})) =
   ## Change current implementation of `callSoon`. This is normally called when dispatcher from `asyncdispatcher` is initialized.
   callSoonProc = p
 
-proc callSoon*(cbproc: proc ()) =
+proc callSoon*(cbproc: proc () {.gcsafe.}) =
   ## Call `cbproc` "soon".
   ##
   ## If async dispatcher is running, `cbproc` will be executed during next dispatcher tick.
@@ -225,7 +229,7 @@ proc complete*[T](future: FutureVar[T], val: T) =
   fut.finished = true
   fut.value = val
   fut.callbacks.call()
-  when isFutureLoggingEnabled: logFutureFinish(future)
+  when isFutureLoggingEnabled: logFutureFinish(fut)
 
 proc fail*[T](future: Future[T], error: ref Exception) =
   ## Completes `future` with `error`.

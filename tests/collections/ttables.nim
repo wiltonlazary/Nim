@@ -8,7 +8,6 @@ And we get here
 '''
 joinable: false
 targets: "c cpp js"
-matrix: "-d:nimEnableHashRef"
 """
 
 # xxx wrap in a template to test in VM, see https://github.com/timotheecour/Nim/issues/534#issuecomment-769565033
@@ -178,16 +177,14 @@ block tableconstr:
 block ttables2:
   proc TestHashIntInt() =
     var tab = initTable[int,int]()
-    let n = 100_000
+    let n = 10
     for i in 1..n:
       tab[i] = i
     for i in 1..n:
       var x = tab[i]
       if x != i : echo "not found ", i
 
-  proc run1() =
-    for i in 1 .. 50:
-      TestHashIntInt()
+  TestHashIntInt()
 
   # bug #2107
 
@@ -199,7 +196,6 @@ block ttables2:
   delTab[5] = 5
 
 
-  run1()
   echo "2"
 
 block tablesref:

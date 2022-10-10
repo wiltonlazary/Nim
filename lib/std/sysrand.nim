@@ -20,7 +20,7 @@
 ## | :---                 | ----:                 |
 ## | Windows              | `BCryptGenRandom`_    |
 ## | Linux                | `getrandom`_          |
-## | MacOSX               | `getentropy`_         |
+## | MacOSX               | `SecRandomCopyBytes`_ |
 ## | iOS                  | `SecRandomCopyBytes`_ |
 ## | OpenBSD              | `getentropy openbsd`_ |
 ## | FreeBSD              | `getrandom freebsd`_  |
@@ -37,6 +37,11 @@
 ## .. _getRandomValues: https://www.w3.org/TR/WebCryptoAPI/#Crypto-method-getRandomValues
 ## .. _randomFillSync: https://nodejs.org/api/crypto.html#crypto_crypto_randomfillsync_buffer_offset_size
 ## .. _/dev/urandom: https://en.wikipedia.org/wiki//dev/random
+##
+## On a Linux target, a call to the `getrandom` syscall can be avoided (e.g.
+## for targets running kernel version < 3.17) by passing a compile flag of
+## `-d:nimNoGetRandom`. If this flag is passed, sysrand will use `/dev/urandom`
+## as with any other POSIX compliant OS.
 ##
 
 runnableExamples:
@@ -57,8 +62,11 @@ when not defined(js):
 when defined(posix):
   import posix
 
+when defined(nimPreviewSlimSystem):
+  import std/assertions
+
 const
-  batchImplOS = defined(freebsd) or defined(openbsd) or (defined(macosx) and not defined(ios))
+  batchImplOS = defined(freebsd) or defined(openbsd) or defined(zephyr)
   batchSize {.used.} = 256
 
 when batchImplOS:
@@ -132,7 +140,7 @@ elif defined(windows):
   type
     PVOID = pointer
     BCRYPT_ALG_HANDLE = PVOID
-    PUCHAR = ptr cuchar
+    PUCHAR = ptr uint8
     NTSTATUS = clong
     ULONG = culong
 
@@ -159,15 +167,14 @@ elif defined(windows):
 
     result = randomBytes(addr dest[0], size)
 
-elif defined(linux):
+elif defined(linux) and not defined(nimNoGetRandom) and not defined(emscripten):
   # TODO using let, pending bootstrap >= 1.4.0
   var SYS_getrandom {.importc: "SYS_getrandom", header: "<sys/syscall.h>".}: clong
   const syscallHeader = """#include <unistd.h>
 #include <sys/syscall.h>"""
 
-  proc syscall(
-    n: clong, buf: pointer, bufLen: cint, flags: cuint
-  ): clong {.importc: "syscall", header: syscallHeader.}
+  proc syscall(n: clong): clong {.
+      importc: "syscall", varargs, header: syscallHeader.}
     #  When reading from the urandom source (GRND_RANDOM is not set),
     #  getrandom() will block until the entropy pool has been
     #  initialized (unless the GRND_NONBLOCK flag was specified).  If a
@@ -202,6 +209,16 @@ elif defined(openbsd):
   proc getRandomImpl(p: pointer, size: int): int {.inline.} =
     result = getentropy(p, cint(size)).int
 
+elif defined(zephyr):
+  proc sys_csrand_get(dst: pointer, length: csize_t): cint {.importc: "sys_csrand_get", header: "<random/rand32.h>".}
+    # Fill the destination buffer with cryptographically secure
+    # random data values
+    #
+
+  proc getRandomImpl(p: pointer, size: int): int {.inline.} =
+    # 0 if success, -EIO if entropy reseed error
+    result = sys_csrand_get(p, csize_t(size)).int
+
 elif defined(freebsd):
   type cssize_t {.importc: "ssize_t", header: "<sys/types.h>".} = int
 
@@ -214,8 +231,8 @@ elif defined(freebsd):
   proc getRandomImpl(p: pointer, size: int): int {.inline.} =
     result = getrandom(p, csize_t(size), 0)
 
-elif defined(ios):
-  {.passL: "-framework Security".}
+elif defined(ios) or defined(macosx):
+  {.passl: "-framework Security".}
 
   const errSecSuccess = 0 ## No error.
 
@@ -236,19 +253,6 @@ elif defined(ios):
       return
 
     result = secRandomCopyBytes(nil, csize_t(size), addr dest[0])
-
-elif defined(macosx):
-  const sysrandomHeader = """#include <Availability.h>
-#include <sys/random.h>
-"""
-
-  proc getentropy(p: pointer, size: csize_t): cint {.importc: "getentropy", header: sysrandomHeader.}
-    # getentropy() fills a buffer with random data, which can be used as input
-    # for process-context pseudorandom generators like arc4random(3).
-    # The maximum buffer size permitted is 256 bytes.
-
-  proc getRandomImpl(p: pointer, size: int): int {.inline.} =
-    result = getentropy(p, csize_t(size)).int
 
 else:
   template urandomImpl(result: var int, dest: var openArray[byte]) =

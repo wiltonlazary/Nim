@@ -11,16 +11,21 @@
 # by knowing how the anchors are going to be named.
 
 import
-  ast, strutils, strtabs, options, msgs, os, idents,
-  wordrecg, syntaxes, renderer, lexer, packages/docutils/rstast,
-  packages/docutils/rst, packages/docutils/rstgen,
+  ast, strutils, strtabs, algorithm, sequtils, options, msgs, os, idents,
+  wordrecg, syntaxes, renderer, lexer,
+  packages/docutils/[rst, rstgen, dochelpers],
   json, xmltree, trees, types,
   typesrenderer, astalgo, lineinfos, intsets,
-  pathutils, tables, nimpaths, renderverbatim, osproc
+  pathutils, tables, nimpaths, renderverbatim, osproc, packages
+import packages/docutils/rstast except FileIndex, TLineInfo
 
 from uri import encodeUrl
 from std/private/globs import nativeToUnixPath
 from nodejs import findNodeJs
+
+when defined(nimPreviewSlimSystem):
+  import std/[assertions, syncio]
+
 
 const
   exportSection = skField
@@ -42,11 +47,21 @@ type
     descRst: ItemPre     ## Description of the item (may contain
                          ## runnableExamples).
     substitutions: seq[string]    ## Variable names in `doc.item`...
+    sortName: string    ## The string used for sorting in output
+    info: rstast.TLineInfo  ## place where symbol was defined (for messages)
+    anchor: string  ## e.g. HTML anchor
+    name: string  ## short name of the symbol, not unique
+                  ## (includes backticks ` if present)
+    detailedName: string  ## longer name like `proc search(x: int): int`
   ModSection = object  ## Section like Procs, Types, etc.
-    secItems: seq[Item]  ## Pre-processed items.
+    secItems: Table[string, seq[Item]]
+                         ## Map basic name -> pre-processed items.
     finalMarkup: string  ## The items, after RST pass 2 and rendering.
   ModSections = array[TSymKind, ModSection]
-  TSections = array[TSymKind, string]
+  TocItem = object  ## HTML TOC item
+    content: string
+    sortName: string
+  TocSectionsFinal = array[TSymKind, string]
   ExampleGroup = ref object
     ## a group of runnableExamples with same rdoccmd
     rdoccmd: string ## from 1st arg in `runnableExamples(rdoccmd): body`
@@ -63,8 +78,13 @@ type
     module: PSym
     modDeprecationMsg: string
     section: ModSections     # entries of ``.nim`` file (for `proc`s, etc)
-    toc, toc2: TSections     # toc2 - grouped TOC
-    tocTable: array[TSymKind, Table[string, string]]
+    tocSimple: array[TSymKind, seq[TocItem]]
+      # TOC entries for non-overloadable symbols (e.g. types, constants)...
+    tocTable:  array[TSymKind, Table[string, seq[TocItem]]]
+      # ...otherwise (e.g. procs)
+    toc2: TocSectionsFinal  # TOC `content`, which is probably wrapped
+                            # in `doc.section.toc2`
+    toc: TocSectionsFinal  # final TOC (wrapped in `doc.section.toc`)
     indexValFilename: string
     analytics: string  # Google Analytics javascript, "" if doesn't exist
     seenSymbols: StringTableRef # avoids duplicate symbol generation for HTML.
@@ -72,7 +92,7 @@ type
     jEntriesFinal: JsonNode    # final JSON after RST pass 2 and rendering
     types: TStrTable
     sharedState: PRstSharedState
-    isPureRst: bool
+    standaloneDoc: bool
     conf*: ConfigRef
     cache*: IdentCache
     exampleCounter: int
@@ -81,11 +101,66 @@ type
     thisDir*: AbsoluteDir
     exampleGroups: OrderedTable[string, ExampleGroup]
     wroteSupportFiles*: bool
+    nimToRstFid: Table[lineinfos.FileIndex, rstast.FileIndex]
+      ## map Nim FileIndex -> RST one, it's needed because we keep them separate
 
   PDoc* = ref TDocumentor ## Alias to type less.
 
 proc add(dest: var ItemPre, rst: PRstNode) = dest.add ItemFragment(isRst: true, rst: rst)
 proc add(dest: var ItemPre, str: string) = dest.add ItemFragment(isRst: false, str: str)
+
+proc addRstFileIndex(d: PDoc, info: lineinfos.TLineInfo): rstast.FileIndex =
+  let invalid = rstast.FileIndex(-1)
+  result = d.nimToRstFid.getOrDefault(info.fileIndex, default = invalid)
+  if result == invalid:
+    let fname = toFullPath(d.conf, info)
+    result = addFilename(d.sharedState, fname)
+    d.nimToRstFid[info.fileIndex] = result
+
+proc cmpDecimalsIgnoreCase(a, b: string): int =
+  ## For sorting with correct handling of cases like 'uint8' and 'uint16'.
+  ## Also handles leading zeros well (however note that leading zeros are
+  ## significant when lengths of numbers mismatch, e.g. 'bar08' > 'bar8' !).
+  runnableExamples:
+    doAssert cmpDecimalsIgnoreCase("uint8", "uint16") < 0
+    doAssert cmpDecimalsIgnoreCase("val00032", "val16suffix") > 0
+    doAssert cmpDecimalsIgnoreCase("val16suffix", "val16") > 0
+    doAssert cmpDecimalsIgnoreCase("val_08_32", "val_08_8") > 0
+    doAssert cmpDecimalsIgnoreCase("val_07_32", "val_08_8") < 0
+    doAssert cmpDecimalsIgnoreCase("ab8", "ab08") < 0
+    doAssert cmpDecimalsIgnoreCase("ab8de", "ab08c") < 0 # sanity check
+  let aLen = a.len
+  let bLen = b.len
+  var
+    iA = 0
+    iB = 0
+  while iA < aLen and iB < bLen:
+    if isDigit(a[iA]) and isDigit(b[iB]):
+      var
+        limitA = iA  # index after the last (least significant) digit
+        limitB = iB
+      while limitA < aLen and isDigit(a[limitA]): inc limitA
+      while limitB < bLen and isDigit(b[limitB]): inc limitB
+      var pos = max(limitA-iA, limitB-iA)
+      while pos > 0:
+        if limitA-pos < iA:  # digit in `a` is 0 effectively
+          result = ord('0') - ord(b[limitB-pos])
+        elif limitB-pos < iB:  # digit in `b` is 0 effectively
+          result = ord(a[limitA-pos]) - ord('0')
+        else:
+          result = ord(a[limitA-pos]) - ord(b[limitB-pos])
+        if result != 0: return
+        dec pos
+      result = (limitA - iA) - (limitB - iB)  # consider 'bar08' > 'bar8'
+      if result != 0: return
+      iA = limitA
+      iB = limitB
+    else:
+      result = ord(toLowerAscii(a[iA])) - ord(toLowerAscii(b[iB]))
+      if result != 0: return
+      inc iA
+      inc iB
+  result = (aLen - iA) - (bLen - iB)
 
 proc prettyString(a: object): string =
   # xxx pending std/prettyprint refs https://github.com/nim-lang/RFCs/issues/203#issuecomment-602534906
@@ -117,7 +192,7 @@ proc presentationPath*(conf: ConfigRef, file: AbsoluteFile): RelativeFile =
     if result.isEmpty: bail()
   elif conf.docRoot.len > 0:
     # we're (currently) requiring `isAbsolute` to avoid confusion when passing
-    # a relative path (would it be relative wrt $PWD or to projectfile)
+    # a relative path (would it be relative with regard to $PWD or to projectfile)
     conf.globalAssert conf.docRoot.isAbsolute, arg=conf.docRoot
     conf.globalAssert conf.docRoot.dirExists, arg=conf.docRoot
     # needed because `canonicalizePath` called on `file`
@@ -159,17 +234,22 @@ template declareClosures =
     case msgKind
     of meCannotOpenFile: k = errCannotOpenFile
     of meExpected: k = errXExpected
-    of meGridTableNotImplemented: k = errGridTableNotImplemented
-    of meMarkdownIllformedTable: k = errMarkdownIllformedTable
-    of meNewSectionExpected: k = errNewSectionExpected
-    of meGeneralParseError: k = errGeneralParseError
-    of meInvalidDirective: k = errInvalidDirectiveX
-    of meInvalidRstField: k = errInvalidRstField
-    of meFootnoteMismatch: k = errFootnoteMismatch
-    of mwRedefinitionOfLabel: k = warnRedefinitionOfLabel
-    of mwUnknownSubstitution: k = warnUnknownSubstitutionX
-    of mwUnsupportedLanguage: k = warnLanguageXNotSupported
-    of mwUnsupportedField: k = warnFieldXNotSupported
+    of meMissingClosing: k = errRstMissingClosing
+    of meGridTableNotImplemented: k = errRstGridTableNotImplemented
+    of meMarkdownIllformedTable: k = errRstMarkdownIllformedTable
+    of meIllformedTable: k = errRstIllformedTable
+    of meNewSectionExpected: k = errRstNewSectionExpected
+    of meGeneralParseError: k = errRstGeneralParseError
+    of meInvalidDirective: k = errRstInvalidDirectiveX
+    of meInvalidField: k = errRstInvalidField
+    of meFootnoteMismatch: k = errRstFootnoteMismatch
+    of meSandboxedDirective: k = errRstSandboxedDirective
+    of mwRedefinitionOfLabel: k = warnRstRedefinitionOfLabel
+    of mwUnknownSubstitution: k = warnRstUnknownSubstitutionX
+    of mwAmbiguousLink: k = warnRstAmbiguousLink
+    of mwBrokenLink: k = warnRstBrokenLink
+    of mwUnsupportedLanguage: k = warnRstLanguageXNotSupported
+    of mwUnsupportedField: k = warnRstFieldXNotSupported
     of mwRstStyle: k = warnRstStyle
     {.gcsafe.}:
       globalError(conf, newLineInfo(conf, AbsoluteFile filename, line, col), k, arg)
@@ -180,13 +260,11 @@ template declareClosures =
       result = getCurrentDir() / s
       if not fileExists(result): result = ""
 
-proc parseRst(text, filename: string,
+proc parseRst(text: string,
               line, column: int,
-              rstOptions: RstParseOptions;
               conf: ConfigRef, sharedState: PRstSharedState): PRstNode =
   declareClosures()
-  result = rstParsePass1(text, filename, line, column, rstOptions,
-                         sharedState)
+  result = rstParsePass1(text, line, column, sharedState)
 
 proc getOutFile2(conf: ConfigRef; filename: RelativeFile,
                  ext: string, guessTarget: bool): AbsoluteFile =
@@ -199,24 +277,36 @@ proc getOutFile2(conf: ConfigRef; filename: RelativeFile,
   else:
     result = getOutFile(conf, filename, ext)
 
-proc isLatexCmd(conf: ConfigRef): bool = conf.cmd in {cmdRst2tex, cmdDoc2tex}
+proc isLatexCmd(conf: ConfigRef): bool =
+  conf.cmd in {cmdRst2tex, cmdMd2tex, cmdDoc2tex}
 
 proc newDocumentor*(filename: AbsoluteFile; cache: IdentCache; conf: ConfigRef,
-                    outExt: string = HtmlExt, module: PSym = nil): PDoc =
+                    outExt: string = HtmlExt, module: PSym = nil,
+                    standaloneDoc = false, preferMarkdown = true,
+                    hasToc = true): PDoc =
   declareClosures()
   new(result)
   result.module = module
   result.conf = conf
   result.cache = cache
   result.outDir = conf.outDir.string
-  const options = {roSupportRawDirective, roSupportMarkdown,
-                   roPreferMarkdown, roNimFile}
+  result.standaloneDoc = standaloneDoc
+  var options= {roSupportRawDirective, roSupportMarkdown, roSandboxDisabled}
+  if preferMarkdown:
+    options.incl roPreferMarkdown
+  if not standaloneDoc: options.incl roNimFile
+  # (options can be changed dynamically in `setDoctype` by `{.doctype.}`)
+  result.hasToc = hasToc
   result.sharedState = newRstSharedState(
       options, filename.string,
-      docgenFindFile, compilerMsgHandler)
+      docgenFindFile, compilerMsgHandler, hasToc)
   initRstGenerator(result[], (if conf.isLatexCmd: outLatex else: outHtml),
-                   conf.configVars, filename.string, options,
+                   conf.configVars, filename.string,
                    docgenFindFile, compilerMsgHandler)
+
+  if conf.configVars.hasKey("doc.googleAnalytics") and
+      conf.configVars.hasKey("doc.plausibleAnalytics"):
+    doAssert false, "Either use googleAnalytics or plausibleAnalytics"
 
   if conf.configVars.hasKey("doc.googleAnalytics"):
     result.analytics = """
@@ -231,6 +321,10 @@ proc newDocumentor*(filename: AbsoluteFile; cache: IdentCache; conf: ConfigRef,
 
 </script>
     """ % [conf.configVars.getOrDefault"doc.googleAnalytics"]
+  elif conf.configVars.hasKey("doc.plausibleAnalytics"):
+    result.analytics = """
+    <script defer data-domain="$1" src="https://plausible.io/js/plausible.js"></script>
+    """ % [conf.configVars.getOrDefault"doc.plausibleAnalytics"]
   else:
     result.analytics = ""
 
@@ -258,7 +352,7 @@ proc newDocumentor*(filename: AbsoluteFile; cache: IdentCache; conf: ConfigRef,
       # Make sure the destination directory exists
       createDir(outp.splitFile.dir)
       # Include the current file if we're parsing a nim file
-      let importStmt = if d.isPureRst: "" else: "import \"$1\"\n" % [d.filename.replace("\\", "/")]
+      let importStmt = if d.standaloneDoc: "" else: "import \"$1\"\n" % [d.filename.replace("\\", "/")]
       writeFile(outp, importStmt & content)
 
       proc interpSnippetCmd(cmd: string): string =
@@ -296,11 +390,11 @@ proc getVarIdx(varnames: openArray[string], id: string): int =
 
 proc genComment(d: PDoc, n: PNode): PRstNode =
   if n.comment.len > 0:
-    result = parseRst(n.comment, toFullPath(d.conf, n.info),
+    d.sharedState.currFileIdx = addRstFileIndex(d, n.info)
+    result = parseRst(n.comment,
                       toLinenumber(n.info),
                       toColumn(n.info) + DocColOffset,
-                      d.options, d.conf,
-                      d.sharedState)
+                      d.conf, d.sharedState)
 
 proc genRecCommentAux(d: PDoc, n: PNode): PRstNode =
   if n == nil: return nil
@@ -338,9 +432,6 @@ proc getPlainDocstring(n: PNode): string =
     for i in 0..<n.safeLen:
       result = getPlainDocstring(n[i])
       if result.len > 0: return
-
-proc belongsToPackage(conf: ConfigRef; module: PSym): bool =
-  result = module.kind == skModule and module.getnimblePkgId == conf.mainPackageId
 
 proc externalDep(d: PDoc; module: PSym): string =
   if optWholeProject in d.conf.globalOptions or d.conf.docRoot.len > 0:
@@ -397,7 +488,7 @@ proc nodeToHighlightedHtml(d: PDoc; n: PNode; result: var string;
               "\\spanIdentifier{$1}", [escLit, procLink])
       elif s != nil and s.kind in {skType, skVar, skLet, skConst} and
            sfExported in s.flags and s.owner != nil and
-           belongsToPackage(d.conf, s.owner) and d.target == outHtml:
+           belongsToProjectPackage(d.conf, s.owner) and d.target == outHtml:
         let external = externalDep(d, s.owner)
         result.addf "<a href=\"$1#$2\"><span class=\"Identifier\">$3</span></a>",
           [changeFileExt(external, "html"), literal,
@@ -764,14 +855,6 @@ proc complexName(k: TSymKind, n: PNode, baseName: string): string =
       result.add(defaultParamSeparator)
       result.add(params)
 
-proc isCallable(n: PNode): bool =
-  ## Returns true if `n` contains a callable node.
-  case n.kind
-  of nkProcDef, nkMethodDef, nkIteratorDef, nkMacroDef, nkTemplateDef,
-    nkConverterDef, nkFuncDef: result = true
-  else:
-    result = false
-
 proc docstringSummary(rstText: string): string =
   ## Returns just the first line or a brief chunk of text from a rst string.
   ##
@@ -788,7 +871,7 @@ proc docstringSummary(rstText: string): string =
   result = rstText.substr(2).strip
   var pos = result.find('\L')
   if pos > 0:
-    result.delete(pos, result.len - 1)
+    result.setLen(pos - 1)
     result.add("…")
   if pos < maxDocstringChars:
     return
@@ -796,7 +879,7 @@ proc docstringSummary(rstText: string): string =
   pos = result.find({'.', ',', ':'})
   let last = result.len - 1
   if pos > 0 and pos < last:
-    result.delete(pos, last)
+    result.setLen(pos - 1)
     result.add("…")
 
 proc genDeprecationMsg(d: PDoc, n: PNode): string =
@@ -838,6 +921,64 @@ proc genSeeSrc(d: PDoc, path: string, line: int): string =
           "path", path.string, "line", $line, "url", gitUrl,
           "commit", commit, "devel", develBranch]])
 
+proc symbolPriority(k: TSymKind): int =
+  result = case k
+    of skMacro: -3
+    of skTemplate: -2
+    of skIterator: -1
+    else: 0  # including skProc which have higher priority
+    # documentation itself has even higher priority 1
+
+proc toLangSymbol(k: TSymKind, n: PNode, baseName: string): LangSymbol =
+  ## Converts symbol info (names/types/parameters) in `n` into format
+  ## `LangSymbol` convenient for ``rst.nim``/``dochelpers.nim``.
+  result.name = baseName.nimIdentNormalize
+  result.symKind = k.toHumanStr
+  if k in routineKinds:
+    var
+      paramTypes: seq[string]
+    renderParamTypes(paramTypes, n[paramsPos], toNormalize=true)
+    let paramNames = renderParamNames(n[paramsPos], toNormalize=true)
+    # In some rare cases (system.typeof) parameter type is not set for default:
+    doAssert paramTypes.len <= paramNames.len
+    for i in 0 ..< paramNames.len:
+      if i < paramTypes.len:
+        result.parameters.add (paramNames[i], paramTypes[i])
+      else:
+        result.parameters.add (paramNames[i], "")
+    result.parametersProvided = true
+
+    result.outType = renderOutType(n[paramsPos], toNormalize=true)
+
+  if k in {skProc, skFunc, skType, skIterator}:
+    # Obtain `result.generics`
+    # Use `n[miscPos]` since n[genericParamsPos] does not contain constraints
+    var genNode: PNode = nil
+    if k == skType:
+      genNode = n[1]  # FIXME: what is index 1?
+    else:
+      if n[miscPos].kind != nkEmpty:
+        genNode = n[miscPos][1]   # FIXME: what is index 1?
+    if genNode != nil:
+      var literal = ""
+      var r: TSrcGen
+      initTokRender(r, genNode, {renderNoBody, renderNoComments,
+        renderNoPragmas, renderNoProcDefs})
+      var kind = tkEof
+      while true:
+        getNextTok(r, kind, literal)
+        if kind == tkEof:
+          break
+        if kind != tkSpaces:
+          result.generics.add(literal.nimIdentNormalize)
+
+  if k == skType:
+    case n[2].kind
+    of nkEnumTy: result.symTypeKind = "enum"
+    of nkObjectTy: result.symTypeKind = "object"
+    of nkTupleTy: result.symTypeKind = "tuple"
+    else: discard
+
 proc genItem(d: PDoc, n, nameNode: PNode, k: TSymKind, docFlags: DocFlags) =
   if (docFlags != kForceExport) and not isVisible(d, nameNode): return
   let
@@ -862,31 +1003,48 @@ proc genItem(d: PDoc, n, nameNode: PNode, k: TSymKind, docFlags: DocFlags) =
       break
     plainName.add(literal)
 
-  var pragmaNode: PNode = nil
-  if n.isCallable and n[pragmasPos].kind != nkEmpty:
-    pragmaNode = findPragma(n[pragmasPos], wDeprecated)
+  var pragmaNode = getDeclPragma(n)
+  if pragmaNode != nil: pragmaNode = findPragma(pragmaNode, wDeprecated)
 
   inc(d.id)
   let
     plainNameEsc = esc(d.target, plainName.strip)
+    detailedName = k.toHumanStr & " " & (
+        if k in routineKinds: plainName else: name)
     uniqueName = if k in routineKinds: plainNameEsc else: name
+    sortName = if k in routineKinds: plainName.strip else: name
     cleanPlainSymbol = renderPlainSymbolName(nameNode)
     complexSymbol = complexName(k, n, cleanPlainSymbol)
-    plainSymbolEnc = encodeUrl(cleanPlainSymbol)
+    plainSymbolEnc = encodeUrl(cleanPlainSymbol, usePlus = false)
     symbolOrId = d.newUniquePlainSymbol(complexSymbol)
-    symbolOrIdEnc = encodeUrl(symbolOrId)
+    symbolOrIdEnc = encodeUrl(symbolOrId, usePlus = false)
     deprecationMsg = genDeprecationMsg(d, pragmaNode)
+    rstLangSymbol = toLangSymbol(k, n, cleanPlainSymbol)
+
+  # we generate anchors automatically for subsequent use in doc comments
+  let lineinfo = rstast.TLineInfo(
+      line: nameNode.info.line, col: nameNode.info.col,
+      fileIndex: addRstFileIndex(d, nameNode.info))
+  addAnchorNim(d.sharedState, refn = symbolOrId, tooltip = detailedName,
+               rstLangSymbol, priority = symbolPriority(k), info = lineinfo)
 
   nodeToHighlightedHtml(d, n, result, {renderNoBody, renderNoComments,
     renderDocComments, renderSyms}, symbolOrIdEnc)
 
   let seeSrc = genSeeSrc(d, toFullPath(d.conf, n.info), n.info.line.int)
 
-  d.section[k].secItems.add Item(descRst: comm, substitutions: @[
-     "name", name, "uniqueName", uniqueName,
+  d.section[k].secItems.mgetOrPut(cleanPlainSymbol, newSeq[Item]()).add Item(
+    descRst: comm,
+    sortName: sortName,
+    info: lineinfo,
+    anchor: symbolOrId,
+    detailedName: detailedName,
+    name: name,
+    substitutions: @[
+     "uniqueName", uniqueName,
      "header", result, "itemID", $d.id,
      "header_plain", plainNameEsc, "itemSym", cleanPlainSymbol,
-     "itemSymOrID", symbolOrId, "itemSymEnc", plainSymbolEnc,
+     "itemSymEnc", plainSymbolEnc,
      "itemSymOrIDEnc", symbolOrIdEnc, "seeSrc", seeSrc,
      "deprecationMsg", deprecationMsg])
 
@@ -906,12 +1064,15 @@ proc genItem(d: PDoc, n, nameNode: PNode, k: TSymKind, docFlags: DocFlags) =
       setIndexTerm(d[], external, symbolOrId, plain, nameNode.sym.name.s & '.' & plain,
         xmltree.escape(getPlainDocstring(e).docstringSummary))
 
-  d.toc[k].add(getConfigVar(d.conf, "doc.item.toc") % [
+  d.tocSimple[k].add TocItem(
+    sortName: sortName,
+    content: getConfigVar(d.conf, "doc.item.toc") % [
       "name", name, "header_plain", plainNameEsc,
       "itemSymOrIDEnc", symbolOrIdEnc])
 
-  d.tocTable[k].mgetOrPut(cleanPlainSymbol, "").add(
-    getConfigVar(d.conf, "doc.item.tocTable") % [
+  d.tocTable[k].mgetOrPut(cleanPlainSymbol, newSeq[TocItem]()).add TocItem(
+    sortName: sortName,
+    content: getConfigVar(d.conf, "doc.item.tocTable") % [
       "name", name, "header_plain", plainNameEsc,
       "itemSymOrID", symbolOrId.replace(",", ",<wbr>"),
       "itemSymOrIDEnc", symbolOrIdEnc])
@@ -920,7 +1081,7 @@ proc genItem(d: PDoc, n, nameNode: PNode, k: TSymKind, docFlags: DocFlags) =
   # because it doesn't include object fields or documentation comments. So we
   # use the plain one for callable elements, and the complex for the rest.
   var linkTitle = changeFileExt(extractFilename(d.filename), "") & ": "
-  if n.isCallable: linkTitle.add(xmltree.escape(plainName.strip))
+  if n.kind in routineDefs: linkTitle.add(xmltree.escape(plainName.strip))
   else: linkTitle.add(xmltree.escape(complexSymbol.strip))
 
   setIndexTerm(d[], external, symbolOrId, name, linkTitle,
@@ -971,6 +1132,46 @@ proc genJsonItem(d: PDoc, n, nameNode: PNode, k: TSymKind): JsonItem =
         for kind in genericParam.sym.typ.sons:
           param["types"].add %($kind)
         result.json["signature"]["genericParams"].add param
+  if optGenIndex in d.conf.globalOptions:
+    genItem(d, n, nameNode, k, kForceExport)
+
+proc setDoctype(d: PDoc, n: PNode) =
+  ## Processes `{.doctype.}` pragma changing Markdown/RST parsing options.
+  if n == nil:
+    return
+  if n.len != 2:
+    localError(d.conf, n.info, errUser,
+      "doctype pragma takes exactly 1 argument"
+    )
+    return
+  var dt = ""
+  case n[1].kind
+  of nkStrLit:
+    dt = toLowerAscii(n[1].strVal)
+  of nkIdent:
+    dt = toLowerAscii(n[1].ident.s)
+  else:
+    localError(d.conf, n.info, errUser,
+      "unknown argument type $1 provided to doctype" % [$n[1].kind]
+    )
+    return
+  case dt
+  of "markdown":
+    d.sharedState.options.incl roSupportMarkdown
+    d.sharedState.options.incl roPreferMarkdown
+  of "rstmarkdown":
+    d.sharedState.options.incl roSupportMarkdown
+    d.sharedState.options.excl roPreferMarkdown
+  of "rst":
+    d.sharedState.options.excl roSupportMarkdown
+    d.sharedState.options.excl roPreferMarkdown
+  else:
+    localError(d.conf, n.info, errUser,
+      (
+        "unknown doctype value \"$1\", should be from " &
+        "\"RST\", \"Markdown\", \"RstMarkdown\""
+      ) % [dt]
+    )
 
 proc checkForFalse(n: PNode): bool =
   result = n.kind == nkIdent and cmpIgnoreStyle(n.ident.s, "false") == 0
@@ -987,7 +1188,7 @@ proc traceDeps(d: PDoc, it: PNode) =
     for x in it[2]:
       a[2] = x
       traceDeps(d, a)
-  elif it.kind == nkSym and belongsToPackage(d.conf, it.sym):
+  elif it.kind == nkSym and belongsToProjectPackage(d.conf, it.sym):
     let external = externalDep(d, it.sym)
     if d.section[k].finalMarkup != "": d.section[k].finalMarkup.add(", ")
     dispA(d.conf, d.section[k].finalMarkup,
@@ -997,7 +1198,7 @@ proc traceDeps(d: PDoc, it: PNode) =
 
 proc exportSym(d: PDoc; s: PSym) =
   const k = exportSection
-  if s.kind == skModule and belongsToPackage(d.conf, s):
+  if s.kind == skModule and belongsToProjectPackage(d.conf, s):
     let external = externalDep(d, s)
     if d.section[k].finalMarkup != "": d.section[k].finalMarkup.add(", ")
     dispA(d.conf, d.section[k].finalMarkup,
@@ -1006,7 +1207,7 @@ proc exportSym(d: PDoc; s: PSym) =
                  changeFileExt(external, "html")])
   elif s.kind != skModule and s.owner != nil:
     let module = originatingModule(s)
-    if belongsToPackage(d.conf, module):
+    if belongsToProjectPackage(d.conf, module):
       let
         complexSymbol = complexName(s.kind, s.ast, s.name.s)
         symbolOrId = d.newUniquePlainSymbol(complexSymbol)
@@ -1032,10 +1233,11 @@ proc documentEffect(cache: IdentCache; n, x: PNode, effectType: TSpecialWord, id
     let actual = s.typ.n[0]
     if actual.len != effectListLen: return
     let real = actual[idx]
-
+    if real == nil: return
+    let realLen = real.len
     # warning: hack ahead:
-    var effects = newNodeI(nkBracket, n.info, real.len)
-    for i in 0..<real.len:
+    var effects = newNodeI(nkBracket, n.info, realLen)
+    for i in 0..<realLen:
       var t = typeToString(real[i].typ)
       if t.startsWith("ref "): t = substr(t, 4)
       effects[i] = newIdentNode(getIdent(cache, t), n.info)
@@ -1066,8 +1268,9 @@ proc documentRaises*(cache: IdentCache; n: PNode) =
   let p3 = documentWriteEffect(cache, n, sfWrittenTo, "writes")
   let p4 = documentNewEffect(cache, n)
   let p5 = documentWriteEffect(cache, n, sfEscapes, "escapes")
+  let p6 = documentEffect(cache, n, pragmas, wForbids, forbiddenEffects)
 
-  if p1 != nil or p2 != nil or p3 != nil or p4 != nil or p5 != nil:
+  if p1 != nil or p2 != nil or p3 != nil or p4 != nil or p5 != nil or p6 != nil:
     if pragmas.kind == nkEmpty:
       n[pragmasPos] = newNodeI(nkPragma, n.info)
     if p1 != nil: n[pragmasPos].add p1
@@ -1075,6 +1278,7 @@ proc documentRaises*(cache: IdentCache; n: PNode) =
     if p3 != nil: n[pragmasPos].add p3
     if p4 != nil: n[pragmasPos].add p4
     if p5 != nil: n[pragmasPos].add p5
+    if p6 != nil: n[pragmasPos].add p6
 
 proc generateDoc*(d: PDoc, n, orig: PNode, docFlags: DocFlags = kDefault) =
   ## Goes through nim nodes recursively and collects doc comments.
@@ -1086,6 +1290,8 @@ proc generateDoc*(d: PDoc, n, orig: PNode, docFlags: DocFlags = kDefault) =
   of nkPragma:
     let pragmaNode = findPragma(n, wDeprecated)
     d.modDeprecationMsg.add(genDeprecationMsg(d, pragmaNode))
+    let doctypeNode = findPragma(n, wDoctype)
+    setDoctype(d, doctypeNode)
   of nkCommentStmt: d.modDescPre.add(genComment(d, n))
   of nkProcDef, nkFuncDef:
     when useEffectSystem: documentRaises(d.cache, n)
@@ -1130,15 +1336,40 @@ proc generateDoc*(d: PDoc, n, orig: PNode, docFlags: DocFlags = kDefault) =
     if comm.len != 0: d.modDescPre.add(comm)
   else: discard
 
+proc overloadGroupName(s: string, k: TSymKind): string =
+  ## Turns a name like `f` into anchor `f-procs-all`
+  #s & " " & k.toHumanStr & "s all"
+  s & "-" & k.toHumanStr & "s-all"
+
 proc finishGenerateDoc*(d: var PDoc) =
   ## Perform 2nd RST pass for resolution of links/footnotes/headings...
+  # copy file map `filenames` to ``rstgen.nim`` for its warnings
+  d.filenames = d.sharedState.filenames
+
   # Main title/subtitle are allowed only in the first RST fragment of document
   var firstRst = PRstNode(nil)
   for fragment in d.modDescPre:
     if fragment.isRst:
       firstRst = fragment.rst
       break
+  d.hasToc = d.hasToc or d.sharedState.hasToc
   preparePass2(d.sharedState, firstRst)
+
+  # add anchors to overload groups before RST resolution
+  for k in TSymKind:
+    if k in routineKinds:
+      for plainName, overloadChoices in d.section[k].secItems:
+        if overloadChoices.len > 1:
+          let refn = overloadGroupName(plainName, k)
+          let tooltip = "$1 ($2 overloads)" % [
+                      k.toHumanStr & " " & plainName, $overloadChoices.len]
+          addAnchorNim(d.sharedState, refn, tooltip,
+                       LangSymbol(symKind: k.toHumanStr,
+                                  name: nimIdentBackticksNormalize(plainName),
+                                  isGroup: true),
+                       priority = symbolPriority(k),
+                       # select index `0` just to have any meaningful warning:
+                       info = overloadChoices[0].info)
 
   # Finalize fragments of ``.nim`` or ``.rst`` file
   proc renderItemPre(d: PDoc, fragments: ItemPre, result: var string) =
@@ -1148,18 +1379,37 @@ proc finishGenerateDoc*(d: var PDoc) =
         var resolved = resolveSubs(d.sharedState, f.rst)
         renderRstToOut(d[], resolved, result)
       of false: result &= f.str
+  proc cmp(x, y: Item): int = cmpDecimalsIgnoreCase(x.sortName, y.sortName)
   for k in TSymKind:
-    for item in d.section[k].secItems:
-      var itemDesc: string
-      renderItemPre(d, item.descRst, itemDesc)
-      d.section[k].finalMarkup.add(
-        getConfigVar(d.conf, "doc.item") % (
-            item.substitutions & @["desc", itemDesc]))
-      itemDesc = ""
-    d.section[k].secItems.setLen 0
+    # add symbols to section for each `k`, while optionally wrapping
+    # overloadable items with the same basic name by ``doc.item2``
+    let overloadableNames = toSeq(keys(d.section[k].secItems))
+    for plainName in overloadableNames.sorted(cmpDecimalsIgnoreCase):
+      var overloadChoices = d.section[k].secItems[plainName]
+      overloadChoices.sort(cmp)
+      var nameContent = ""
+      for item in overloadChoices:
+        var itemDesc: string
+        renderItemPre(d, item.descRst, itemDesc)
+        nameContent.add(
+          getConfigVar(d.conf, "doc.item") % (
+              item.substitutions & @[
+                "desc", itemDesc,
+                "name", item.name,
+                "itemSymOrID", item.anchor]))
+      if k in routineKinds:
+        let plainNameEsc1 = esc(d.target, plainName.strip)
+        let plainNameEsc2 = esc(d.target, plainName.strip, escMode=emUrl)
+        d.section[k].finalMarkup.add(
+          getConfigVar(d.conf, "doc.item2") % (
+            @["header_plain", plainNameEsc1,
+              "overloadGroupName", overloadGroupName(plainNameEsc2, k),
+              "content", nameContent]))
+      else:
+        d.section[k].finalMarkup.add(nameContent)
+    d.section[k].secItems.clear
   renderItemPre(d, d.modDescPre, d.modDescFinal)
   d.modDescPre.setLen 0
-  d.hasToc = d.hasToc or d.sharedState.hasToc
 
   # Finalize fragments of ``.json`` file
   for i, entry in d.jEntriesPre:
@@ -1168,14 +1418,18 @@ proc finishGenerateDoc*(d: var PDoc) =
       var str: string
       renderRstToOut(d[], resolved, str)
       entry.json[entry.rstField] = %str
-      d.jEntriesFinal.add entry.json
       d.jEntriesPre[i].rst = nil
+
+    d.jEntriesFinal.add entry.json # generates docs
 
 proc add(d: PDoc; j: JsonItem) =
   if j.json != nil or j.rst != nil: d.jEntriesPre.add j
 
 proc generateJson*(d: PDoc, n: PNode, includeComments: bool = true) =
   case n.kind
+  of nkPragma:
+    let doctypeNode = findPragma(n, wDoctype)
+    setDoctype(d, doctypeNode)
   of nkCommentStmt:
     if includeComments:
       d.add JsonItem(rst: genComment(d, n), rstField: "comment",
@@ -1267,19 +1521,38 @@ proc genSection(d: PDoc, kind: TSymKind, groupedToc = false) =
       "sectionid", $ord(kind), "sectionTitle", title,
       "sectionTitleID", $(ord(kind) + 50), "content", d.section[kind].finalMarkup]
 
-  var tocSource = d.toc
+  proc cmp(x, y: TocItem): int = cmpDecimalsIgnoreCase(x.sortName, y.sortName)
   if groupedToc:
-    for p in d.tocTable[kind].keys:
+    let overloadableNames = toSeq(keys(d.tocTable[kind]))
+    for plainName in overloadableNames.sorted(cmpDecimalsIgnoreCase):
+      var overloadChoices = d.tocTable[kind][plainName]
+      overloadChoices.sort(cmp)
+      var content: string
+      for item in overloadChoices:
+        content.add item.content
       d.toc2[kind].add getConfigVar(d.conf, "doc.section.toc2") % [
           "sectionid", $ord(kind), "sectionTitle", title,
           "sectionTitleID", $(ord(kind) + 50),
-          "content", d.tocTable[kind][p], "plainName", p]
-    tocSource = d.toc2
+          "content", content, "plainName", plainName]
+  else:
+    for item in d.tocSimple[kind].sorted(cmp):
+      d.toc2[kind].add item.content
 
-  d.toc[kind] = getConfigVar(d.conf, "doc.section.toc") % [
-      "sectionid", $ord(kind), "sectionTitle", title,
-      "sectionTitleID", $(ord(kind) + 50), "content", tocSource[kind]]
+  let sectionValues = @[
+     "sectionID", $ord(kind), "sectionTitleID", $(ord(kind) + 50),
+     "sectionTitle", title
+  ]
 
+  # Check if the toc has any children
+  if d.toc2[kind] != "":
+    # Use the dropdown version instead and store the children in the dropdown
+    d.toc[kind] = getConfigVar(d.conf, "doc.section.toc") % (sectionValues & @[
+       "content", d.toc2[kind]
+    ])
+  else:
+    # Just have the link
+    d.toc[kind] =  getConfigVar(d.conf, "doc.section.toc_item") % sectionValues
+    
 proc relLink(outDir: AbsoluteDir, destFile: AbsoluteFile, linkto: RelativeFile): string =
   $relativeTo(outDir / linkto, destFile.splitFile().dir, '/')
 
@@ -1302,7 +1575,10 @@ proc genOutFile(d: PDoc, groupedToc = false): string =
   # Extract the title. Non API modules generate an entry in the index table.
   if d.meta[metaTitle].len != 0:
     title = d.meta[metaTitle]
-    let external = presentationPath(d.conf, AbsoluteFile d.filename).changeFileExt(HtmlExt).string.nativeToUnixPath
+    let external = AbsoluteFile(d.destFile)
+      .relativeTo(d.conf.outDir, '/')
+      .changeFileExt(HtmlExt)
+      .string
     setIndexTerm(d[], external, "", title)
   else:
     # Modules get an automatic title for the HTML, but no entry in the index.
@@ -1314,7 +1590,7 @@ proc genOutFile(d: PDoc, groupedToc = false): string =
         "\\\\\\vspace{0.5em}\\large $1", [esc(d.target, d.meta[metaSubtitle])])
 
   var groupsection = getConfigVar(d.conf, "doc.body_toc_groupsection")
-  let bodyname = if d.hasToc and not d.isPureRst and not d.conf.isLatexCmd:
+  let bodyname = if d.hasToc and not d.standaloneDoc and not d.conf.isLatexCmd:
                    groupsection.setLen 0
                    "doc.body_toc_group"
                  elif d.hasToc: "doc.body_toc"
@@ -1376,7 +1652,11 @@ proc writeOutput*(d: PDoc, useWarning = false, groupedToc = false) =
         outfile.string)
     if not d.wroteSupportFiles: # nimdoc.css + dochack.js
       let nimr = $d.conf.getPrefixDir()
-      copyFile(docCss.interp(nimr = nimr), $d.conf.outDir / nimdocOutCss)
+      case d.target
+      of outHtml:
+        copyFile(docCss.interp(nimr = nimr), $d.conf.outDir / nimdocOutCss)
+      of outLatex:
+        copyFile(docCls.interp(nimr = nimr), $d.conf.outDir / nimdocOutCls)
       if optGenIndex in d.conf.globalOptions:
         let docHackJs2 = getDocHacksJs(nimr, nim = getAppFilename())
         copyFile(docHackJs2, $d.conf.outDir / docHackJs2.lastPathPart)
@@ -1394,6 +1674,8 @@ proc writeOutputJson*(d: PDoc, useWarning = false) =
   if optStdout in d.conf.globalOptions:
     write(stdout, $content)
   else:
+    let dir = d.destFile.splitFile.dir
+    createDir(dir)
     var f: File
     if open(f, d.destFile, fmWrite):
       write(f, $content)
@@ -1416,45 +1698,43 @@ proc commandDoc*(cache: IdentCache, conf: ConfigRef) =
   handleDocOutputOptions conf
   var ast = parseFile(conf.projectMainIdx, cache, conf)
   if ast == nil: return
-  var d = newDocumentor(conf.projectFull, cache, conf)
-  d.hasToc = true
+  var d = newDocumentor(conf.projectFull, cache, conf, hasToc = true)
   generateDoc(d, ast, ast)
   finishGenerateDoc(d)
   writeOutput(d)
   generateIndex(d)
 
 proc commandRstAux(cache: IdentCache, conf: ConfigRef;
-                   filename: AbsoluteFile, outExt: string) =
+                   filename: AbsoluteFile, outExt: string,
+                   preferMarkdown: bool) =
   var filen = addFileExt(filename, "txt")
-  var d = newDocumentor(filen, cache, conf, outExt)
-
-  d.isPureRst = true
-  let rst = parseRst(readFile(filen.string), filen.string,
+  var d = newDocumentor(filen, cache, conf, outExt, standaloneDoc = true,
+                        preferMarkdown = preferMarkdown, hasToc = false)
+  let rst = parseRst(readFile(filen.string),
                      line=LineRstInit, column=ColRstInit,
-                     {roSupportRawDirective, roSupportMarkdown,
-                      roPreferMarkdown}, conf,
-                     d.sharedState)
+                     conf, d.sharedState)
   d.modDescPre = @[ItemFragment(isRst: true, rst: rst)]
   finishGenerateDoc(d)
   writeOutput(d)
   generateIndex(d)
 
-proc commandRst2Html*(cache: IdentCache, conf: ConfigRef) =
-  commandRstAux(cache, conf, conf.projectFull, HtmlExt)
+proc commandRst2Html*(cache: IdentCache, conf: ConfigRef,
+                      preferMarkdown=false) =
+  commandRstAux(cache, conf, conf.projectFull, HtmlExt, preferMarkdown)
 
-proc commandRst2TeX*(cache: IdentCache, conf: ConfigRef) =
-  commandRstAux(cache, conf, conf.projectFull, TexExt)
+proc commandRst2TeX*(cache: IdentCache, conf: ConfigRef,
+                     preferMarkdown=false) =
+  commandRstAux(cache, conf, conf.projectFull, TexExt, preferMarkdown)
 
 proc commandJson*(cache: IdentCache, conf: ConfigRef) =
   ## implementation of a deprecated jsondoc0 command
   var ast = parseFile(conf.projectMainIdx, cache, conf)
   if ast == nil: return
-  var d = newDocumentor(conf.projectFull, cache, conf)
+  var d = newDocumentor(conf.projectFull, cache, conf, hasToc = true)
   d.onTestSnippet = proc (d: var RstGenerator; filename, cmd: string;
                           status: int; content: string) =
     localError(conf, newLineInfo(conf, AbsoluteFile d.filename, -1, -1),
                warnUser, "the ':test:' attribute is not supported by this backend")
-  d.hasToc = true
   generateJson(d, ast)
   finishGenerateDoc(d)
   let json = d.jEntriesFinal
@@ -1473,12 +1753,11 @@ proc commandJson*(cache: IdentCache, conf: ConfigRef) =
 proc commandTags*(cache: IdentCache, conf: ConfigRef) =
   var ast = parseFile(conf.projectMainIdx, cache, conf)
   if ast == nil: return
-  var d = newDocumentor(conf.projectFull, cache, conf)
+  var d = newDocumentor(conf.projectFull, cache, conf, hasToc = true)
   d.onTestSnippet = proc (d: var RstGenerator; filename, cmd: string;
                           status: int; content: string) =
     localError(conf, newLineInfo(conf, AbsoluteFile d.filename, -1, -1),
                warnUser, "the ':test:' attribute is not supported by this backend")
-  d.hasToc = true
   var
     content = ""
   generateTags(d, ast, content)
@@ -1511,5 +1790,19 @@ proc commandBuildIndex*(conf: ConfigRef, dir: string, outFile = RelativeFile"") 
 
   try:
     writeFile(filename, code)
+  except:
+    rawMessage(conf, errCannotOpenFile, filename.string)
+
+proc commandBuildIndexJson*(conf: ConfigRef, dir: string, outFile = RelativeFile"") =
+  var (modules, symbols, docs) = readIndexDir(dir)
+  let documents = toSeq(keys(Table[IndexEntry, seq[IndexEntry]](docs)))
+  let body = %*({"documents": documents, "modules": modules, "symbols": symbols})
+
+  var outFile = outFile
+  if outFile.isEmpty: outFile = theindexFname.RelativeFile.changeFileExt("")
+  let filename = getOutFile(conf, outFile, JsonExt)
+
+  try:
+    writeFile(filename, $body)
   except:
     rawMessage(conf, errCannotOpenFile, filename.string)

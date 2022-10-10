@@ -32,13 +32,16 @@ type
     # non-fatal errors
     errIllFormedAstX, errCannotOpenFile,
     errXExpected,
-    errGridTableNotImplemented,
-    errMarkdownIllformedTable,
-    errGeneralParseError,
-    errNewSectionExpected,
-    errInvalidDirectiveX,
-    errInvalidRstField,
-    errFootnoteMismatch,
+    errRstMissingClosing,
+    errRstGridTableNotImplemented,
+    errRstMarkdownIllformedTable,
+    errRstIllformedTable,
+    errRstNewSectionExpected,
+    errRstGeneralParseError,
+    errRstInvalidDirectiveX,
+    errRstInvalidField,
+    errRstFootnoteMismatch,
+    errRstSandboxedDirective,
     errProveInit, # deadcode
     errGenerated,
     errUser,
@@ -46,11 +49,16 @@ type
     warnCannotOpenFile = "CannotOpenFile", warnOctalEscape = "OctalEscape",
     warnXIsNeverRead = "XIsNeverRead", warnXmightNotBeenInit = "XmightNotBeenInit",
     warnDeprecated = "Deprecated", warnConfigDeprecated = "ConfigDeprecated",
+    warnDotLikeOps = "DotLikeOps",
     warnSmallLshouldNotBeUsed = "SmallLshouldNotBeUsed", warnUnknownMagic = "UnknownMagic",
-    warnRedefinitionOfLabel = "RedefinitionOfLabel", warnUnknownSubstitutionX = "UnknownSubstitutionX",
-    warnLanguageXNotSupported = "LanguageXNotSupported",
-    warnFieldXNotSupported = "FieldXNotSupported",
-    warnRstStyle = "warnRstStyle", warnCommentXIgnored = "CommentXIgnored",
+    warnRstRedefinitionOfLabel = "RedefinitionOfLabel",
+    warnRstUnknownSubstitutionX = "UnknownSubstitutionX",
+    warnRstAmbiguousLink = "AmbiguousLink",
+    warnRstBrokenLink = "BrokenLink",
+    warnRstLanguageXNotSupported = "LanguageXNotSupported",
+    warnRstFieldXNotSupported = "FieldXNotSupported",
+    warnRstStyle = "warnRstStyle",
+    warnCommentXIgnored = "CommentXIgnored",
     warnTypelessParam = "TypelessParam",
     warnUseBase = "UseBase", warnWriteToForeignHeap = "WriteToForeignHeap",
     warnUnsafeCode = "UnsafeCode", warnUnusedImportX = "UnusedImport",
@@ -67,6 +75,13 @@ type
     warnResultUsed = "ResultUsed",
     warnCannotOpen = "CannotOpen",
     warnFileChanged = "FileChanged",
+    warnSuspiciousEnumConv = "EnumConv",
+    warnAnyEnumConv = "AnyEnumConv",
+    warnHoleEnumConv = "HoleEnumConv",
+    warnCstringConv = "CStringConv",
+    warnEffect = "Effect",
+    warnCastSizes = "CastSizes"
+    warnTemplateRedefinition = "TemplateRedefinition",
     warnUser = "User",
     # hints
     hintSuccess = "Success", hintSuccessX = "SuccessX",
@@ -81,6 +96,7 @@ type
     hintPattern = "Pattern", hintExecuting = "Exec", hintLinking = "Link", hintDependency = "Dependency",
     hintSource = "Source", hintPerformance = "Performance", hintStackTrace = "StackTrace",
     hintGCStats = "GCStats", hintGlobalVar = "GlobalVar", hintExpandMacro = "ExpandMacro",
+    hintAmbiguousEnum = "AmbiguousEnum",
     hintUser = "User", hintUserRaw = "UserRaw", hintExtendedContext = "ExtendedContext",
     hintMsgOrigin = "MsgOrigin", # since 1.3.5
     hintDeclaredLoc = "DeclaredLoc", # since 1.5.1
@@ -93,13 +109,16 @@ const
     errIllFormedAstX: "illformed AST: $1",
     errCannotOpenFile: "cannot open '$1'",
     errXExpected: "'$1' expected",
-    errGridTableNotImplemented: "grid table is not implemented",
-    errMarkdownIllformedTable: "illformed delimiter row of a markdown table",
-    errGeneralParseError: "general parse error",
-    errNewSectionExpected: "new section expected $1",
-    errInvalidDirectiveX: "invalid directive: '$1'",
-    errInvalidRstField: "invalid field: $1",
-    errFootnoteMismatch: "number of footnotes and their references don't match: $1",
+    errRstMissingClosing: "$1",
+    errRstGridTableNotImplemented: "grid table is not implemented",
+    errRstMarkdownIllformedTable: "illformed delimiter row of a markdown table",
+    errRstIllformedTable: "Illformed table: $1",
+    errRstNewSectionExpected: "new section expected $1",
+    errRstGeneralParseError: "general parse error",
+    errRstInvalidDirectiveX: "invalid directive: '$1'",
+    errRstInvalidField: "invalid field: $1",
+    errRstFootnoteMismatch: "number of footnotes and their references don't match: $1",
+    errRstSandboxedDirective: "disabled directive: '$1'",
     errProveInit: "Cannot prove that '$1' is initialized.",  # deadcode
     errGenerated: "$1",
     errUser: "$1",
@@ -109,12 +128,15 @@ const
     warnXmightNotBeenInit: "'$1' might not have been initialized",
     warnDeprecated: "$1",
     warnConfigDeprecated: "config file '$1' is deprecated",
+    warnDotLikeOps: "$1",
     warnSmallLshouldNotBeUsed: "'l' should not be used as an identifier; may look like '1' (one)",
     warnUnknownMagic: "unknown magic '$1' might crash the compiler",
-    warnRedefinitionOfLabel: "redefinition of label '$1'",
-    warnUnknownSubstitutionX: "unknown substitution '$1'",
-    warnLanguageXNotSupported: "language '$1' not supported",
-    warnFieldXNotSupported: "field '$1' not supported",
+    warnRstRedefinitionOfLabel: "redefinition of label '$1'",
+    warnRstUnknownSubstitutionX: "unknown substitution '$1'",
+    warnRstAmbiguousLink: "ambiguous doc link $1",
+    warnRstBrokenLink: "broken link '$1'",
+    warnRstLanguageXNotSupported: "language '$1' not supported",
+    warnRstFieldXNotSupported: "field '$1' not supported",
     warnRstStyle: "RST style: $1",
     warnCommentXIgnored: "comment '$1' ignored",
     warnTypelessParam: "", # deadcode
@@ -149,6 +171,13 @@ const
     warnResultUsed: "used 'result' variable",
     warnCannotOpen: "cannot open: $1",
     warnFileChanged: "file changed: $1",
+    warnSuspiciousEnumConv: "$1",
+    warnAnyEnumConv: "$1",
+    warnHoleEnumConv: "$1",
+    warnCstringConv: "$1",
+    warnEffect: "$1",
+    warnCastSizes: "$1",
+    warnTemplateRedefinition: "template '$1' is implicitly redefined, consider adding an explicit .redefine pragma",
     warnUser: "$1",
     hintSuccess: "operation successful: $#",
     # keep in sync with `testament.isSuccess`
@@ -181,6 +210,7 @@ const
     hintGCStats: "$1",
     hintGlobalVar: "global variable declared here",
     hintExpandMacro: "expanded macro: $1",
+    hintAmbiguousEnum: "$1",
     hintUser: "$1",
     hintUserRaw: "$1",
     hintExtendedContext: "$1",
@@ -196,14 +226,15 @@ const
   warnMax* = pred(hintSuccess)
   hintMin* = hintSuccess
   hintMax* = high(TMsgKind)
+  rstWarnings* = {warnRstRedefinitionOfLabel..warnRstStyle}
 
 type
   TNoteKind* = range[warnMin..hintMax] # "notes" are warnings or hints
   TNoteKinds* = set[TNoteKind]
 
 proc computeNotesVerbosity(): array[0..3, TNoteKinds] =
-  result[3] = {low(TNoteKind)..high(TNoteKind)} - {warnObservableStores, warnResultUsed}
-  result[2] = result[3] - {hintStackTrace, warnUninit, hintExtendedContext, hintDeclaredLoc, hintProcessingStmt}
+  result[3] = {low(TNoteKind)..high(TNoteKind)} - {warnObservableStores, warnResultUsed, warnAnyEnumConv}
+  result[2] = result[3] - {hintStackTrace, hintExtendedContext, hintDeclaredLoc, hintProcessingStmt}
   result[1] = result[2] - {warnProveField, warnProveIndex,
     warnGcUnsafe, hintPath, hintDependency, hintCodeBegin, hintCodeEnd,
     hintSource, hintGlobalVar, hintGCStats, hintMsgOrigin, hintPerformance}

@@ -1,5 +1,6 @@
 discard """
   output: '''
+=destroy called
 123xyzabc
 destroyed: false
 destroyed: false
@@ -30,12 +31,61 @@ ok
 true
 copying
 123
+42
 closed
 destroying variable: 20
 destroying variable: 10
 '''
-  cmd: "nim c --gc:arc --deepcopy:on $file"
+  cmd: "nim c --gc:arc --deepcopy:on -d:nimAllocPagesViaMalloc $file"
 """
+
+# bug #9401
+
+type
+  MyObj = object
+    len: int
+    data: ptr UncheckedArray[float]
+
+proc `=destroy`*(m: var MyObj) =
+
+  echo "=destroy called"
+
+  if m.data != nil:
+    deallocShared(m.data)
+    m.data = nil
+
+type
+  MyObjDistinct = distinct MyObj
+
+proc `=copy`*(m: var MyObj, m2: MyObj) =
+  if m.data == m2.data: return
+  if m.data != nil:
+    `=destroy`(m)
+  m.len = m2.len
+  if m.len > 0:
+    m.data = cast[ptr UncheckedArray[float]](allocShared(sizeof(float) * m.len))
+    copyMem(m.data, m2.data, sizeof(float) * m.len)
+
+
+proc `=sink`*(m: var MyObj, m2: MyObj) =
+  if m.data != m2.data:
+    if m.data != nil:
+      `=destroy`(m)
+    m.len = m2.len
+    m.data = m2.data
+
+proc newMyObj(len: int): MyObj =
+  result.len = len
+  result.data = cast[ptr UncheckedArray[float]](allocShared(sizeof(float) * len))
+
+proc newMyObjDistinct(len: int): MyObjDistinct =
+  MyObjDistinct(newMyObj(len))
+
+proc fooDistinct =
+  doAssert newMyObjDistinct(2).MyObj.len == 2
+
+fooDistinct()
+
 
 proc takeSink(x: sink string): bool = true
 
@@ -463,3 +513,36 @@ proc putValue[T](n: T) =
   echo b.n
 
 useForward()
+
+
+# bug #17319
+type
+  BrokenObject = ref object
+    brokenType: seq[int]
+
+proc use(obj: BrokenObject) =
+  discard
+
+method testMethod(self: BrokenObject) {.base.} =
+  iterator testMethodIter() {.closure.} =
+    use(self)
+
+  var nameIterVar = testMethodIter
+  nameIterVar()
+
+let mikasa = BrokenObject()
+mikasa.testMethod()
+
+# bug #19205
+type
+  InputSectionBase* = object of RootObj
+    relocations*: seq[int]   # traced reference. string has a similar SIGSEGV.
+  InputSection* = object of InputSectionBase
+
+proc fooz(sec: var InputSectionBase) =
+  if sec of InputSection:  # this line SIGSEGV.
+    echo 42
+
+var sec = create(InputSection)
+sec[] = InputSection(relocations: newSeq[int]())
+fooz sec[]

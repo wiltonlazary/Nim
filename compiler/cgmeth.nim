@@ -13,6 +13,10 @@ import
   intsets, options, ast, msgs, idents, renderer, types, magicsys,
   sempass2, strutils, modulegraphs, lineinfos
 
+when defined(nimPreviewSlimSystem):
+  import std/assertions
+
+
 proc genConv(n: PNode, d: PType, downcast: bool; conf: ConfigRef): PNode =
   var dest = skipTypes(d, abstractPtrs)
   var source = skipTypes(n.typ, abstractPtrs)
@@ -119,7 +123,7 @@ proc createDispatcher(s: PSym; g: ModuleGraph; idgen: IdGenerator): PSym =
   if disp.typ.callConv == ccInline: disp.typ.callConv = ccNimCall
   disp.ast = copyTree(s.ast)
   disp.ast[bodyPos] = newNodeI(nkEmpty, s.info)
-  disp.loc.r = nil
+  disp.loc.r = ""
   if s.typ[0] != nil:
     if disp.ast.len > resultPos:
       disp.ast[resultPos].sym = copySym(s.ast[resultPos].sym, nextSymId(idgen))

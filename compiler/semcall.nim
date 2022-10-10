@@ -152,6 +152,10 @@ proc effectProblem(f, a: PType; result: var string; c: PContext) =
       of efLockLevelsDiffer:
         result.add "\n  The `.locks` requirements differ. Annotate the " &
             "proc with {.locks: 0.} to get extended error information."
+      of efEffectsDelayed:
+        result.add "\n  The `.effectsOf` annotations differ."
+      of efTagsIllegal:
+        result.add "\n  The `.forbids` requirements caught an illegal tag."
       when defined(drnim):
         if not c.graph.compatibleProps(c.graph, f, a):
           result.add "\n  The `.requires` or `.ensures` properties are incompatible."
@@ -280,7 +284,7 @@ const
 
 proc notFoundError*(c: PContext, n: PNode, errors: CandidateErrors) =
   # Gives a detailed error message; this is separated from semOverloadedCall,
-  # as semOverlodedCall is already pretty slow (and we need this information
+  # as semOverloadedCall is already pretty slow (and we need this information
   # only in case of an error).
   if c.config.m.errorOutputs == {}:
     # fail fast:
@@ -370,22 +374,6 @@ proc resolveOverloads(c: PContext, n, orig: PNode,
 
   let overloadsState = result.state
   if overloadsState != csMatch:
-    if c.p != nil and c.p.selfSym != nil:
-      # we need to enforce semchecking of selfSym again because it
-      # might need auto-deref:
-      var hiddenArg = newSymNode(c.p.selfSym)
-      hiddenArg.typ = nil
-      n.sons.insert(hiddenArg, 1)
-      orig.sons.insert(hiddenArg, 1)
-
-      pickBest(f)
-
-      if result.state != csMatch:
-        n.sons.delete(1)
-        orig.sons.delete(1)
-        excl n.flags, nfExprCall
-      else: return
-
     if nfDotField in n.flags:
       internalAssert c.config, f.kind == nkIdent and n.len >= 2
 
@@ -556,8 +544,8 @@ proc semResolvedCall(c: PContext, x: TCandidate,
       for s in instantiateGenericParamList(c, gp, x.bindings):
         case s.kind
         of skConst:
-          if not s.ast.isNil:
-            x.call.add s.ast
+          if not s.astdef.isNil:
+            x.call.add s.astdef
           else:
             x.call.add c.graph.emptyNode
         of skType:
@@ -592,27 +580,6 @@ proc semOverloadedCall(c: PContext, n, nOrig: PNode,
               "Non-matching candidates for " & renderTree(n) & "\n" &
               candidates)
     result = semResolvedCall(c, r, n, flags)
-  elif implicitDeref in c.features and canDeref(n):
-    # try to deref the first argument and then try overloading resolution again:
-    #
-    # XXX: why is this here?
-    # it could be added to the long list of alternatives tried
-    # inside `resolveOverloads` or it could be moved all the way
-    # into sigmatch with hidden conversion produced there
-    #
-    n[1] = n[1].tryDeref
-    var r = resolveOverloads(c, n, nOrig, filter, flags, errors, efExplain in flags)
-    if r.state == csMatch: result = semResolvedCall(c, r, n, flags)
-    else:
-      # get rid of the deref again for a better error message:
-      n[1] = n[1][0]
-      #notFoundError(c, n, errors)
-      if efExplain notin flags:
-        # repeat the overload resolution,
-        # this time enabling all the diagnostic output (this should fail again)
-        discard semOverloadedCall(c, n, nOrig, filter, flags + {efExplain})
-      elif efNoUndeclared notin flags:
-        notFoundError(c, n, errors)
   else:
     if efExplain notin flags:
       # repeat the overload resolution,
@@ -701,7 +668,16 @@ proc searchForBorrowProc(c: PContext, startScope: PScope, fn: PSym): PSym =
   call.add(newIdentNode(fn.name, fn.info))
   for i in 1..<fn.typ.n.len:
     let param = fn.typ.n[i]
-    let t = skipTypes(param.typ, abstractVar-{tyTypeDesc, tyDistinct})
+    const desiredTypes = abstractVar + {tyCompositeTypeClass} - {tyTypeDesc, tyDistinct}
+    #[.
+      # We only want the type not any modifiers such as `ptr`, `var`, `ref` ...
+      # tyCompositeTypeClass is here for
+      # when using something like:
+      type Foo[T] = distinct int
+      proc `$`(f: Foo): string {.borrow.}
+      # We want to skip the `Foo` to get `int`
+    ]#
+    let t = skipTypes(param.typ, desiredTypes)
     if t.kind == tyDistinct or param.typ.kind == tyDistinct: hasDistinct = true
     var x: PType
     if param.typ.kind == tyVar:

@@ -1,10 +1,10 @@
 discard """
   targets: "c cpp js"
-  matrix: "-d:nimEnableHashRef"
 """
 
 import std/hashes
 from stdtest/testutils import disableVm, whenVMorJs
+import std/assertions
 
 when not defined(js) and not defined(cpp):
   block:

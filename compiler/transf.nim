@@ -24,6 +24,9 @@ import
   lowerings, liftlocals,
   modulegraphs, lineinfos
 
+when defined(nimPreviewSlimSystem):
+  import std/assertions
+
 proc transformBody*(g: ModuleGraph; idgen: IdGenerator, prc: PSym, cache: bool): PNode
 
 import closureiters, lambdalifting
@@ -43,7 +46,6 @@ type
     module: PSym
     transCon: PTransCon      # top of a TransCon stack
     inlining: int            # > 0 if we are in inlining context (copy vars)
-    nestedProcs: int         # > 0 if we are in a nested proc
     contSyms, breakSyms: seq[PSym]  # to transform 'continue' and 'break'
     deferDetected, tooEarly: bool
     graph: ModuleGraph
@@ -101,9 +103,11 @@ proc transformSons(c: PTransf, n: PNode): PNode =
   for i in 0..<n.len:
     result[i] = transform(c, n[i])
 
-proc newAsgnStmt(c: PTransf, kind: TNodeKind, le: PNode, ri: PNode): PNode =
+proc newAsgnStmt(c: PTransf, kind: TNodeKind, le: PNode, ri: PNode; isFirstWrite: bool): PNode =
   result = newTransNode(kind, ri.info, 2)
   result[0] = le
+  if isFirstWrite:
+    le.flags.incl nfFirstWrite
   result[1] = ri
 
 proc transformSymAux(c: PTransf, n: PNode): PNode =
@@ -124,6 +128,14 @@ proc transformSymAux(c: PTransf, n: PNode): PNode =
   var tc = c.transCon
   if sfBorrow in s.flags and s.kind in routineKinds:
     # simply exchange the symbol:
+    var s = s
+    while true:
+      # Skips over all borrowed procs getting the last proc symbol without an implementation
+      let body = getBody(c.graph, s)
+      if body.kind == nkSym and sfBorrow in body.sym.flags and getBody(c.graph, body.sym).kind == nkSym:
+        s = body.sym
+      else:
+        break
     b = getBody(c.graph, s)
     if b.kind != nkSym: internalError(c.graph.config, n.info, "wrong AST for borrowed symbol")
     b = newSymNode(b.sym, n.info)
@@ -173,10 +185,12 @@ proc transformVarSection(c: PTransf, v: PNode): PNode =
     if it.kind == nkCommentStmt:
       result[i] = it
     elif it.kind == nkIdentDefs:
-      if it[0].kind == nkSym:
+      var vn = it[0]
+      if vn.kind == nkPragmaExpr: vn = vn[0]
+      if vn.kind == nkSym:
         internalAssert(c.graph.config, it.len == 3)
-        let x = freshVar(c, it[0].sym)
-        idNodeTablePut(c.transCon.mapping, it[0].sym, x)
+        let x = freshVar(c, vn.sym)
+        idNodeTablePut(c.transCon.mapping, vn.sym, x)
         var defs = newTransNode(nkIdentDefs, it.info, 3)
         if importantComments(c.graph.config):
           # keep documentation information:
@@ -352,9 +366,9 @@ proc transformYield(c: PTransf, n: PNode): PNode =
     case lhs.kind
     of nkSym:
       internalAssert c.graph.config, lhs.sym.kind == skForVar
-      result = newAsgnStmt(c, nkFastAsgn, lhs, rhs)
+      result = newAsgnStmt(c, nkFastAsgn, lhs, rhs, false)
     of nkDotExpr:
-      result = newAsgnStmt(c, nkAsgn, lhs, rhs)
+      result = newAsgnStmt(c, nkAsgn, lhs, rhs, false)
     else:
       internalAssert c.graph.config, false
   result = newTransNode(nkStmtList, n.info, 0)
@@ -364,7 +378,7 @@ proc transformYield(c: PTransf, n: PNode): PNode =
   if e.typ.isNil: return result # can happen in nimsuggest for unknown reasons
   if c.transCon.forStmt.len != 3:
     e = skipConv(e)
-    if e.kind in {nkPar, nkTupleConstr}:
+    if e.kind == nkTupleConstr:
       for i in 0..<e.len:
         var v = e[i]
         if v.kind == nkExprColonExpr: v = v[1]
@@ -377,19 +391,51 @@ proc transformYield(c: PTransf, n: PNode): PNode =
           let lhs = c.transCon.forStmt[i]
           let rhs = transform(c, v)
           result.add(asgnTo(lhs, rhs))
+    elif e.kind notin {nkAddr, nkHiddenAddr}: # no need to generate temp for address operation
+      # TODO do not use temp for nodes which cannot have side-effects
+      var tmp = newTemp(c, e.typ, e.info)
+      let v = newNodeI(nkVarSection, e.info)
+      v.addVar(tmp, e)
+
+      result.add transform(c, v)
+
+      for i in 0..<c.transCon.forStmt.len - 2:
+        let lhs = c.transCon.forStmt[i]
+        let rhs = transform(c, newTupleAccess(c.graph, tmp, i))
+        result.add(asgnTo(lhs, rhs))
     else:
-      # Unpack the tuple into the loop variables
-      # XXX: BUG: what if `n` is an expression with side-effects?
       for i in 0..<c.transCon.forStmt.len - 2:
         let lhs = c.transCon.forStmt[i]
         let rhs = transform(c, newTupleAccess(c.graph, e, i))
         result.add(asgnTo(lhs, rhs))
   else:
     if c.transCon.forStmt[0].kind == nkVarTuple:
-      for i in 0..<c.transCon.forStmt[0].len-1:
-        let lhs = c.transCon.forStmt[0][i]
-        let rhs = transform(c, newTupleAccess(c.graph, e, i))
-        result.add(asgnTo(lhs, rhs))
+      var notLiteralTuple = false # we don't generate temp for tuples with const value: (1, 2, 3)
+      let ev = e.skipConv
+      if ev.kind == nkTupleConstr:
+        for i in ev:
+          if not isConstExpr(i):
+            notLiteralTuple = true
+            break
+      else:
+        notLiteralTuple = true
+
+      if e.kind notin {nkAddr, nkHiddenAddr} and notLiteralTuple:
+        # TODO do not use temp for nodes which cannot have side-effects
+        var tmp = newTemp(c, e.typ, e.info)
+        let v = newNodeI(nkVarSection, e.info)
+        v.addVar(tmp, e)
+
+        result.add transform(c, v)
+        for i in 0..<c.transCon.forStmt[0].len-1:
+          let lhs = c.transCon.forStmt[0][i]
+          let rhs = transform(c, newTupleAccess(c.graph, tmp, i))
+          result.add(asgnTo(lhs, rhs))
+      else:
+        for i in 0..<c.transCon.forStmt[0].len-1:
+          let lhs = c.transCon.forStmt[0][i]
+          let rhs = transform(c, newTupleAccess(c.graph, e, i))
+          result.add(asgnTo(lhs, rhs))
     else:
       let lhs = c.transCon.forStmt[0]
       let rhs = transform(c, e)
@@ -402,8 +448,9 @@ proc transformYield(c: PTransf, n: PNode): PNode =
   else:
     # we need to introduce new local variables:
     result.add(introduceNewLocalVars(c, c.transCon.forLoopBody))
-  if result.len > 0:
-    var changeNode = result[0]
+
+  for idx in 0 ..< result.len:
+    var changeNode = result[idx]
     changeNode.info = c.transCon.forStmt.info
     for i, child in changeNode:
       child.info = changeNode.info
@@ -688,7 +735,7 @@ proc transformFor(c: PTransf, n: PNode): PNode =
       # generate a temporary and produce an assignment statement:
       var temp = newTemp(c, t, formal.info)
       addVar(v, temp)
-      stmtList.add(newAsgnStmt(c, nkFastAsgn, temp, arg))
+      stmtList.add(newAsgnStmt(c, nkFastAsgn, temp, arg, true))
       idNodeTablePut(newC.mapping, formal, temp)
     of paVarAsgn:
       assert(skipTypes(formal.typ, abstractInst).kind in {tyVar})
@@ -698,14 +745,14 @@ proc transformFor(c: PTransf, n: PNode): PNode =
       # arrays will deep copy here (pretty bad).
       var temp = newTemp(c, arg.typ, formal.info)
       addVar(v, temp)
-      stmtList.add(newAsgnStmt(c, nkFastAsgn, temp, arg))
+      stmtList.add(newAsgnStmt(c, nkFastAsgn, temp, arg, true))
       idNodeTablePut(newC.mapping, formal, temp)
 
   let body = transformBody(c.graph, c.idgen, iter, true)
   pushInfoContext(c.graph.config, n.info)
   inc(c.inlining)
   stmtList.add(transform(c, body))
-  #findWrongOwners(c, stmtList.pnode)
+  #findWrongOwners(c, stmtList.PNode)
   dec(c.inlining)
   popInfoContext(c.graph.config)
   popTransCon(c)
@@ -762,6 +809,8 @@ proc getMergeOp(n: PNode): PSym =
   else: discard
 
 proc flattenTreeAux(d, a: PNode, op: PSym) =
+  ## Optimizes away the `&` calls in the children nodes and
+  ## lifts the leaf nodes to the same level as `op2`.
   let op2 = getMergeOp(a)
   if op2 != nil and
       (op2.id == op.id or op.magic != mNone and op2.magic == op.magic):
@@ -854,6 +903,9 @@ proc transformExceptBranch(c: PTransf, n: PNode): PNode =
     result = transformSons(c, n)
 
 proc commonOptimizations*(g: ModuleGraph; idgen: IdGenerator; c: PSym, n: PNode): PNode =
+  ## Merges adjacent constant expressions of the children of the `&` call into
+  ## a single constant expression. It also inlines constant expressions which are not
+  ## complex.
   result = n
   for i in 0..<n.safeLen:
     result[i] = commonOptimizations(g, idgen, c, n[i])
@@ -986,11 +1038,13 @@ proc transform(c: PTransf, n: PNode): PNode =
   of nkAsgn:
     result = transformAsgn(c, n)
   of nkIdentDefs, nkConstDef:
-    result = n
-    result[0] = transform(c, n[0])
+    result = newTransNode(n)
+    result[0] = transform(c, skipPragmaExpr(n[0]))
     # Skip the second son since it only contains an unsemanticized copy of the
     # variable type used by docgen
-    result[2] = transform(c, n[2])
+    let last = n.len-1
+    for i in 1..<last: result[i] = n[i]
+    result[last] = transform(c, n[last])
     # XXX comment handling really sucks:
     if importantComments(c.graph.config):
       result.comment = n.comment
@@ -1000,10 +1054,19 @@ proc transform(c: PTransf, n: PNode): PNode =
     # (bug #2604). We need to patch this environment here too:
     let a = n[1]
     if a.kind == nkSym:
-      n[1] = transformSymAux(c, a)
-    return n
+      result = copyTree(n)
+      result[1] = transformSymAux(c, a)
+    else:
+      result = n
   of nkExceptBranch:
     result = transformExceptBranch(c, n)
+  of nkObjConstr:
+    result = n
+    if result.typ.skipTypes({tyGenericInst, tyAlias, tySink}).kind == tyObject or
+       result.typ.skipTypes({tyGenericInst, tyAlias, tySink}).kind == tyRef and result.typ.skipTypes({tyGenericInst, tyAlias, tySink})[0].kind == tyObject:
+      result.sons.add result[0].sons
+      result[0] = newNodeIT(nkType, result.info, result.typ)
+    result = transformSons(c, result)
   of nkCheckedFieldExpr:
     result = transformSons(c, n)
     if result[0].kind != nkDotExpr:

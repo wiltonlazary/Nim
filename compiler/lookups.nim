@@ -9,6 +9,10 @@
 
 # This module implements lookup helpers.
 import std/[algorithm, strutils]
+
+when defined(nimPreviewSlimSystem):
+  import std/assertions
+
 import
   intsets, ast, astalgo, idents, semdata, types, msgs, options,
   renderer, nimfix/prettybase, lineinfos, modulegraphs, astmsgs
@@ -177,14 +181,16 @@ iterator allSyms*(c: PContext): (PSym, int, bool) =
 
 proc someSymFromImportTable*(c: PContext; name: PIdent; ambiguous: var bool): PSym =
   var marked = initIntSet()
+  var symSet = OverloadableSyms
   result = nil
-  for im in c.imports.mitems:
-    for s in symbols(im, marked, name, c.graph):
-      if result == nil:
-        result = s
-      else:
-        if s.kind notin OverloadableSyms or result.kind notin OverloadableSyms:
+  block outer:
+    for im in c.imports.mitems:
+      for s in symbols(im, marked, name, c.graph):
+        if result == nil:
+          result = s
+        elif s.kind notin symSet or result.kind notin symSet:
           ambiguous = true
+          break outer
 
 proc searchInScopes*(c: PContext, s: PIdent; ambiguous: var bool): PSym =
   for scope in allScopes(c.currentScope):
@@ -207,14 +213,16 @@ proc debugScopes*(c: PContext; limit=0, max = int.high) {.deprecated.} =
 
 proc searchInScopesFilterBy*(c: PContext, s: PIdent, filter: TSymKinds): seq[PSym] =
   result = @[]
-  for scope in allScopes(c.currentScope):
-    var ti: TIdentIter
-    var candidate = initIdentIter(ti, scope.symbols, s)
-    while candidate != nil:
-      if candidate.kind in filter:
-        if result.len == 0:
+  block outer:
+    for scope in allScopes(c.currentScope):
+      var ti: TIdentIter
+      var candidate = initIdentIter(ti, scope.symbols, s)
+      while candidate != nil:
+        if candidate.kind in filter:
           result.add candidate
-      candidate = nextIdentIter(ti, scope.symbols)
+          # Break here, because further symbols encountered would be shadowed
+          break outer
+        candidate = nextIdentIter(ti, scope.symbols)
 
   if result.len == 0:
     var marked = initIntSet()
@@ -384,7 +392,7 @@ proc mergeShadowScope*(c: PContext) =
   ##
   ## Merges:
   ## shadow -> shadow: add symbols to the parent but check for redefinitions etc
-  ## shadow -> non-shadow: the above, but also handle exports and all that 
+  ## shadow -> non-shadow: the above, but also handle exports and all that
   let shadowScope = c.currentScope
   c.rawCloseScope
   for sym in shadowScope.symbols:
@@ -480,16 +488,23 @@ proc errorUseQualifier*(c: PContext; info: TLineInfo; s: PSym) =
   var amb: bool
   discard errorUseQualifier(c, info, s, amb)
 
-proc errorUseQualifier(c: PContext; info: TLineInfo; candidates: seq[PSym]) =
+proc errorUseQualifier(c: PContext; info: TLineInfo; candidates: seq[PSym]; prefix = "use one of") =
   var err = "ambiguous identifier: '" & candidates[0].name.s & "'"
   var i = 0
   for candidate in candidates:
-    if i == 0: err.add " -- use one of the following:\n"
+    if i == 0: err.add " -- $1 the following:\n" % prefix
     else: err.add "\n"
     err.add "  " & candidate.owner.name.s & "." & candidate.name.s
     err.add ": " & typeToString(candidate.typ)
     inc i
   localError(c.config, info, errGenerated, err)
+
+proc errorUseQualifier*(c: PContext; info:TLineInfo; choices: PNode) =
+  var candidates = newSeq[PSym](choices.len)
+  let prefix = if choices[0].typ.kind != tyProc: "use one of" else: "you need a helper proc to disambiguate"
+  for i, n in choices:
+    candidates[i] = n.sym
+  errorUseQualifier(c, info, candidates, prefix)
 
 proc errorUndeclaredIdentifier*(c: PContext; info: TLineInfo; name: string, extra = "") =
   var err = "undeclared identifier: '" & name & "'" & extra

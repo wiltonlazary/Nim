@@ -11,6 +11,9 @@
 
 import tables
 
+when defined(nimPreviewSlimSystem):
+  import std/assertions
+
 import
   intsets, options, ast, astalgo, msgs, idents, renderer,
   magicsys, vmdef, modulegraphs, lineinfos, sets, pathutils
@@ -33,7 +36,6 @@ type
                                  # statements
     owner*: PSym              # the symbol this context belongs to
     resultSym*: PSym          # the result symbol (if we are in a proc)
-    selfSym*: PSym            # the 'self' symbol (if available)
     nestedLoopCounter*: int   # whether we are in a loop or not
     nestedBlockCounter*: int  # whether we are in a block or not
     next*: PProcCon           # used for stacking procedure contexts
@@ -65,7 +67,7 @@ type
       # you may be in position to supply a better error message
       # to the user.
     efWantStmt, efAllowStmt, efDetermineType, efExplain,
-    efAllowDestructor, efWantValue, efOperand, efNoSemCheck,
+    efWantValue, efOperand, efNoSemCheck,
     efNoEvaluateGeneric, efInCall, efFromHlo, efNoSem2Check,
     efNoUndeclared
       # Use this if undeclared identifiers should not raise an error during
@@ -118,10 +120,10 @@ type
     symMapping*: TIdTable      # every gensym'ed symbol needs to be mapped
                                # to some new symbol in a generic instantiation
     libs*: seq[PLib]           # all libs used by this module
-    semConstExpr*: proc (c: PContext, n: PNode): PNode {.nimcall.} # for the pragmas
-    semExpr*: proc (c: PContext, n: PNode, flags: TExprFlags = {}): PNode {.nimcall.}
+    semConstExpr*: proc (c: PContext, n: PNode; expectedType: PType = nil): PNode {.nimcall.} # for the pragmas
+    semExpr*: proc (c: PContext, n: PNode, flags: TExprFlags = {}, expectedType: PType = nil): PNode {.nimcall.}
     semTryExpr*: proc (c: PContext, n: PNode, flags: TExprFlags = {}): PNode {.nimcall.}
-    semTryConstExpr*: proc (c: PContext, n: PNode): PNode {.nimcall.}
+    semTryConstExpr*: proc (c: PContext, n: PNode; expectedType: PType = nil): PNode {.nimcall.}
     computeRequiresInit*: proc (c: PContext, t: PType): bool {.nimcall.}
     hasUnresolvedArgs*: proc (c: PContext, n: PNode): bool
 
@@ -146,7 +148,6 @@ type
     inParallelStmt*: int
     instTypeBoundOp*: proc (c: PContext; dc: PSym; t: PType; info: TLineInfo;
                             op: TTypeAttachedOp; col: int): PSym {.nimcall.}
-    selfName*: PIdent
     cache*: IdentCache
     graph*: ModuleGraph
     signatures*: TStrTable
@@ -159,6 +160,8 @@ type
     exportIndirections*: HashSet[(int, int)] # (module.id, symbol.id)
     importModuleMap*: Table[int, int] # (module.id, module.id)
     lastTLineInfo*: TLineInfo
+    sideEffects*: Table[int, seq[(TLineInfo, PSym)]] # symbol.id index
+    inUncheckedAssignSection*: int
 
 template config*(c: PContext): ConfigRef = c.graph.config
 
@@ -260,7 +263,9 @@ proc getGenSym*(c: PContext; s: PSym): PSym =
   result = s
 
 proc considerGenSyms*(c: PContext; n: PNode) =
-  if n.kind == nkSym:
+  if n == nil:
+    discard "can happen for nkFormalParams/nkArgList"
+  elif n.kind == nkSym:
     let s = getGenSym(c, n.sym)
     if n.sym != s:
       n.sym = s

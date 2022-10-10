@@ -17,6 +17,9 @@ when defined(nimHasUsed):
 import
   lexer, options, idents, strutils, ast, msgs, lineinfos
 
+when defined(nimPreviewSlimSystem):
+  import std/[syncio, assertions, formatfloat]
+
 type
   TRenderFlag* = enum
     renderNone, renderNoBody, renderNoComments, renderDocComments,
@@ -162,6 +165,7 @@ proc putNL(g: var TSrcGen) =
 proc optNL(g: var TSrcGen, indent: int) =
   g.pendingNL = indent
   g.lineLen = indent
+  g.col = g.indent
   when defined(nimpretty): g.pendingNewlineCount = 0
 
 proc optNL(g: var TSrcGen) =
@@ -170,6 +174,7 @@ proc optNL(g: var TSrcGen) =
 proc optNL(g: var TSrcGen; a, b: PNode) =
   g.pendingNL = g.indent
   g.lineLen = g.indent
+  g.col = g.indent
   when defined(nimpretty): g.pendingNewlineCount = lineDiff(a, b)
 
 proc indentNL(g: var TSrcGen) =
@@ -393,24 +398,24 @@ proc atom(g: TSrcGen; n: PNode): string =
   of nkUInt64Lit: result = ulitAux(g, n, n.intVal, 8) & "\'u64"
   of nkFloatLit:
     if n.flags * {nfBase2, nfBase8, nfBase16} == {}: result = $(n.floatVal)
-    else: result = litAux(g, n, (cast[PInt64](addr(n.floatVal)))[] , 8)
+    else: result = litAux(g, n, (cast[ptr int64](addr(n.floatVal)))[] , 8)
   of nkFloat32Lit:
     if n.flags * {nfBase2, nfBase8, nfBase16} == {}:
       result = $n.floatVal & "\'f32"
     else:
       f = n.floatVal.float32
-      result = litAux(g, n, (cast[PInt32](addr(f)))[], 4) & "\'f32"
+      result = litAux(g, n, (cast[ptr int32](addr(f)))[], 4) & "\'f32"
   of nkFloat64Lit:
     if n.flags * {nfBase2, nfBase8, nfBase16} == {}:
       result = $n.floatVal & "\'f64"
     else:
-      result = litAux(g, n, (cast[PInt64](addr(n.floatVal)))[], 8) & "\'f64"
+      result = litAux(g, n, (cast[ptr int64](addr(n.floatVal)))[], 8) & "\'f64"
   of nkNilLit: result = "nil"
   of nkType:
     if (n.typ != nil) and (n.typ.sym != nil): result = n.typ.sym.name.s
     else: result = "[type node]"
   else:
-    internalError(g.config, "rnimsyn.atom " & $n.kind)
+    internalError(g.config, "renderer.atom " & $n.kind)
     result = ""
 
 proc lcomma(g: TSrcGen; n: PNode, start: int = 0, theEnd: int = - 1): int =
@@ -501,7 +506,7 @@ proc lsub(g: TSrcGen; n: PNode): int =
   of nkTypeOfExpr: result = (if n.len > 0: lsub(g, n[0]) else: 0)+len("typeof()")
   of nkRefTy: result = (if n.len > 0: lsub(g, n[0])+1 else: 0) + len("ref")
   of nkPtrTy: result = (if n.len > 0: lsub(g, n[0])+1 else: 0) + len("ptr")
-  of nkVarTy: result = (if n.len > 0: lsub(g, n[0])+1 else: 0) + len("var")
+  of nkVarTy, nkOutTy: result = (if n.len > 0: lsub(g, n[0])+1 else: 0) + len("var")
   of nkDistinctTy:
     result = len("distinct") + (if n.len > 0: lsub(g, n[0])+1 else: 0)
     if n.len > 1:
@@ -593,8 +598,8 @@ proc isHideable(config: ConfigRef, n: PNode): bool =
   # xxx compare `ident` directly with `getIdent(cache, wRaises)`, but
   # this requires a `cache`.
   case n.kind
-  of nkExprColonExpr: result = n[0].kind == nkIdent and n[0].ident.s in ["raises", "tags", "extern"]
-  of nkIdent: result = n.ident.s in ["gcsafe"]
+  of nkExprColonExpr: result = n[0].kind == nkIdent and n[0].ident.s in ["raises", "tags", "extern", "deprecated", "forbids"]
+  of nkIdent: result = n.ident.s in ["gcsafe", "deprecated"]
   else: result = false
 
 proc gcommaAux(g: var TSrcGen, n: PNode, ind: int, start: int = 0,
@@ -602,8 +607,8 @@ proc gcommaAux(g: var TSrcGen, n: PNode, ind: int, start: int = 0,
   let inPragma = g.inPragma == 1 # just the top-level
   var inHideable = false
   for i in start..n.len + theEnd:
-    var c = i < n.len + theEnd
-    var sublen = lsub(g, n[i]) + ord(c)
+    let c = i < n.len + theEnd
+    let sublen = lsub(g, n[i]) + ord(c)
     if not fits(g, g.lineLen + sublen) and (ind + sublen < MaxLineLen): optNL(g, ind)
     let oldLen = g.tokens.len
     if inPragma:
@@ -1379,6 +1384,12 @@ proc gsub(g: var TSrcGen, n: PNode, c: TContext, fromStmtList = false) =
       gsub(g, n[0])
     else:
       put(g, tkVar, "var")
+  of nkOutTy:
+    if n.len > 0:
+      putWithSpace(g, tkOut, "out")
+      gsub(g, n[0])
+    else:
+      put(g, tkOut, "out")
   of nkDistinctTy:
     if n.len > 0:
       putWithSpace(g, tkDistinct, "distinct")
@@ -1699,7 +1710,7 @@ proc gsub(g: var TSrcGen, n: PNode, c: TContext, fromStmtList = false) =
     gsub(g, n[0], c)
   else:
     #nkNone, nkExplicitTypeListCall:
-    internalError(g.config, n.info, "rnimsyn.gsub(" & $n.kind & ')')
+    internalError(g.config, n.info, "renderer.gsub(" & $n.kind & ')')
 
 proc renderTree*(n: PNode, renderFlags: TRenderFlags = {}): string =
   if n == nil: return "<nil tree>"
@@ -1758,15 +1769,3 @@ proc getTokSym*(r: TSrcGen): PSym =
     result = r.tokens[r.idx-1].sym
   else:
     result = nil
-
-proc quoteExpr*(a: string): string {.inline.} =
-  ## can be used for quoting expressions in error msgs.
-  "'" & a & "'"
-
-proc genFieldDefect*(field: PSym, disc: PSym): string =
-  ## this needs to be in a module accessible by jsgen, ccgexprs, and vm to
-  ## provide this error msg FieldDefect; msgs would be better but it does not
-  ## import ast
-  result = field.name.s.quoteExpr & " is not accessible using discriminant " &
-    disc.name.s.quoteExpr & " of type " &
-    disc.owner.name.s.quoteExpr
