@@ -1115,7 +1115,7 @@ elif defined(nimdoc):
   proc quit*(errorcode: int = QuitSuccess) {.magic: "Exit", noreturn.}
 
 elif defined(genode):
-  include genode/env
+  import genode/env
 
   var systemEnv {.exportc: runtimeEnvSym.}: GenodeEnvPtr
 
@@ -1419,6 +1419,14 @@ when not defined(js) and not defined(booting) and defined(nimTrMacros):
     # unnecessary slow down in this case.
     swap(cast[ptr pointer](addr arr[a])[], cast[ptr pointer](addr arr[b])[])
 
+when not defined(nimscript):
+  proc atomicInc*(memLoc: var int, x: int = 1): int {.inline,
+                                                     discardable, raises: [], tags: [], benign.}
+  ## Atomic increment of `memLoc`. Returns the value after the operation.
+
+  proc atomicDec*(memLoc: var int, x: int = 1): int {.inline,
+                                                     discardable, raises: [], tags: [], benign.}
+  ## Atomic decrement of `memLoc`. Returns the value after the operation.
 
 include "system/memalloc"
 
@@ -1601,8 +1609,7 @@ when notJSnotNims:
 {.push stackTrace: off.}
 
 when not defined(js) and hasThreadSupport and hostOS != "standalone":
-  const insideRLocksModule = false
-  include "system/syslocks"
+  import std/private/syslocks
   include "system/threadlocalstorage"
 
 when not defined(js) and defined(nimV2):
@@ -1630,19 +1637,16 @@ when not defined(nimscript):
     ## for debug builds. Since it's usually used for debugging, this
     ## is proclaimed to have no IO effect!
 
-when not declared(sysFatal):
-  include "system/fatal"
+
+when defined(nimHasExceptionsQuery):
+  const gotoBasedExceptions = compileOption("exceptions", "goto")
+else:
+  const gotoBasedExceptions = false
+
+import system/fatal
 
 when not defined(nimscript):
   {.push stackTrace: off, profiler: off.}
-
-  proc atomicInc*(memLoc: var int, x: int = 1): int {.inline,
-    discardable, benign.}
-    ## Atomic increment of `memLoc`. Returns the value after the operation.
-
-  proc atomicDec*(memLoc: var int, x: int = 1): int {.inline,
-    discardable, benign.}
-    ## Atomic decrement of `memLoc`. Returns the value after the operation.
 
   include "system/atomics"
 
@@ -1701,7 +1705,7 @@ proc pop*[T](s: var seq[T]): T {.inline, noSideEffect.} =
     result = s[L]
     setLen(s, L)
 
-proc `==`*[T: tuple|object](x, y: T): bool =
+func `==`*[T: tuple|object](x, y: T): bool =
   ## Generic `==` operator for tuples that is lifted from the components.
   ## of `x` and `y`.
   for a, b in fields(x, y):
@@ -2092,7 +2096,13 @@ when not defined(js):
   when declared(initAllocator):
     initAllocator()
   when hasThreadSupport:
-    when hostOS != "standalone": include "system/threads"
+    when hostOS != "standalone":
+      include system/threadimpl
+      when not defined(nimPreviewSlimSystem):
+        {.deprecated: "threads is about to move out of system; use `-d:nimPreviewSlimSystem` and import `std/threads`".}
+        import std/threads
+        export threads
+
   elif not defined(nogc) and not defined(nimscript):
     when not defined(useNimRtl) and not defined(createNimRtl): initStackBottom()
     when declared(initGC): initGC()
@@ -2201,7 +2211,8 @@ when notJSnotNims and hasAlloc:
     include "system/repr"
 
 when notJSnotNims and hasThreadSupport and hostOS != "standalone":
-  include "system/channels_builtin"
+  when not defined(nimPreviewSlimSystem):
+    include "system/channels_builtin"
 
 
 when notJSnotNims and hostOS != "standalone":
@@ -2580,7 +2591,19 @@ template once*(body: untyped): untyped =
 
 {.pop.} # warning[GcMem]: off, warning[Uninit]: off
 
-proc substr*(s: string, first, last: int): string =
+proc substr*(s: openArray[char]): string =
+  ## Copies a slice of `s` into a new string and returns this new
+  ## string.
+  runnableExamples:
+    let a = "abcdefgh"
+    assert a.substr(2, 5) == "cdef"
+    assert a.substr(2) == "cdefgh"
+    assert a.substr(5, 99) == "fgh"
+  result = newString(s.len)
+  for i, ch in s:
+    result[i] = ch
+
+proc substr*(s: string, first, last: int): string = # A bug with `magic: Slice` requires this to exist this way
   ## Copies a slice of `s` into a new string and returns this new
   ## string.
   ##
