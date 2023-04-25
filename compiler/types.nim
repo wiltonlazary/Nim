@@ -753,8 +753,13 @@ proc firstOrd*(conf: ConfigRef; t: PType): Int128 =
     assert(t.n.kind == nkRange)
     result = getOrdValue(t.n[0])
   of tyInt:
-    if conf != nil and conf.target.intSize == 4:
-      result = toInt128(-2147483648)
+    if conf != nil:
+      case conf.target.intSize
+      of 8: result = toInt128(0x8000000000000000'i64)
+      of 4: result = toInt128(-2147483648)
+      of 2: result = toInt128(-32768)
+      of 1: result = toInt128(-128)
+      else: discard
     else:
       result = toInt128(0x8000000000000000'i64)
   of tyInt8: result =  toInt128(-128)
@@ -797,6 +802,29 @@ proc firstFloat*(t: PType): BiggestFloat =
     internalError(newPartialConfigRef(), "invalid kind for firstFloat(" & $t.kind & ')')
     NaN
 
+proc targetSizeSignedToKind*(conf: ConfigRef): TTypeKind =
+  case conf.target.intSize
+  of 8: result = tyInt64
+  of 4: result = tyInt32
+  of 2: result = tyInt16
+  else: discard
+
+proc targetSizeUnsignedToKind*(conf: ConfigRef): TTypeKind =
+  case conf.target.intSize
+  of 8: result = tyUInt64
+  of 4: result = tyUInt32
+  of 2: result = tyUInt16
+  else: discard
+
+proc normalizeKind*(conf: ConfigRef, k: TTypeKind): TTypeKind =
+  case k
+  of tyInt:
+    result = conf.targetSizeSignedToKind()
+  of tyUInt:
+    result = conf.targetSizeUnsignedToKind()
+  else:
+    result = k
+
 proc lastOrd*(conf: ConfigRef; t: PType): Int128 =
   case t.kind
   of tyBool: result = toInt128(1'u)
@@ -808,7 +836,13 @@ proc lastOrd*(conf: ConfigRef; t: PType): Int128 =
     assert(t.n.kind == nkRange)
     result = getOrdValue(t.n[1])
   of tyInt:
-    if conf != nil and conf.target.intSize == 4: result = toInt128(0x7FFFFFFF)
+    if conf != nil:
+      case conf.target.intSize
+      of 8: result = toInt128(0x7FFFFFFFFFFFFFFF'u64)
+      of 4: result = toInt128(0x7FFFFFFF)
+      of 2: result = toInt128(0x00007FFF)
+      of 1: result = toInt128(0x0000007F)
+      else: discard
     else: result = toInt128(0x7FFFFFFFFFFFFFFF'u64)
   of tyInt8: result = toInt128(0x0000007F)
   of tyInt16: result = toInt128(0x00007FFF)
@@ -1201,7 +1235,11 @@ proc sameTypeAux(x, y: PType, c: var TSameTypeClosure): bool =
     assert a[0].len == 0
     assert b.len == 1
     assert b[0].len == 0
-    result = a[0].kind == b[0].kind
+    result = a[0].kind == b[0].kind and sameFlags(a[0], b[0])
+    if result and a[0].kind == tyProc and IgnoreCC notin c.flags:
+      let ecc = a[0].flags * {tfExplicitCallConv}
+      result = ecc == b[0].flags * {tfExplicitCallConv} and
+               (ecc == {} or a[0].callConv == b[0].callConv)
   of tyGenericInvocation, tyGenericBody, tySequence, tyOpenArray, tySet, tyRef,
      tyPtr, tyVar, tyLent, tySink, tyUncheckedArray, tyArray, tyProc, tyVarargs,
      tyOrdinal, tyCompositeTypeClass, tyUserTypeClass, tyUserTypeClassInst,
@@ -1652,7 +1690,7 @@ proc isTupleRecursive(t: PType, cycleDetector: var IntSet): bool =
   of tyTuple:
     var cycleDetectorCopy: IntSet
     for i in 0..<t.len:
-      assign(cycleDetectorCopy, cycleDetector)
+      cycleDetectorCopy = cycleDetector
       if isTupleRecursive(t[i], cycleDetectorCopy):
         return true
   of tyAlias, tyRef, tyPtr, tyGenericInst, tyVar, tyLent, tySink,
@@ -1682,6 +1720,18 @@ proc isDefectException*(t: PType): bool =
     if t.sym != nil and t.sym.owner != nil and
         sfSystemModule in t.sym.owner.flags and
         t.sym.name.s == "Defect":
+      return true
+    if t[0] == nil: break
+    t = skipTypes(t[0], abstractPtrs)
+  return false
+
+proc isDefectOrCatchableError*(t: PType): bool =
+  var t = t.skipTypes(abstractPtrs)
+  while t.kind == tyObject:
+    if t.sym != nil and t.sym.owner != nil and
+        sfSystemModule in t.sym.owner.flags and
+        (t.sym.name.s == "Defect" or
+        t.sym.name.s == "CatchableError"):
       return true
     if t[0] == nil: break
     t = skipTypes(t[0], abstractPtrs)

@@ -14,6 +14,8 @@
 ## as a locator, a name, or both. The term "Uniform Resource Locator"
 ## (URL) refers to the subset of URIs.
 ##
+## .. warning:: URI parsers in this module do not perform security validation.
+##
 ## # Basic usage
 
 
@@ -50,7 +52,7 @@ type
     scheme*, username*, password*: string
     hostname*, port*, path*, query*, anchor*: string
     opaque*: bool
-    isIpv6: bool # not expose it for compatibility.
+    isIpv6*: bool
 
   UriParseError* = object of ValueError
 

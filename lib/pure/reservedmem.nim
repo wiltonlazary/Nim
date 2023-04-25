@@ -9,7 +9,7 @@
 
 ## :Authors: Zahary Karadjov
 ##
-## This module provides utilities for reserving a portions of the
+## This module provides utilities for reserving portions of the
 ## address space of a program without consuming physical memory.
 ## It can be used to implement a dynamically resizable buffer that
 ## is guaranteed to remain in the same memory location. The buffer
@@ -19,6 +19,9 @@
 ## Unstable API.
 
 from std/oserrors import raiseOSError, osLastError
+
+when defined(nimPreviewSlimSystem):
+  import std/assertions
 
 template distance*(lhs, rhs: pointer): int =
   cast[int](rhs) - cast[int](lhs)
