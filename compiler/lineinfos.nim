@@ -83,7 +83,7 @@ type
     warnCstringConv = "CStringConv",
     warnPtrToCstringConv = "PtrToCstringConv",
     warnEffect = "Effect",
-    warnCastSizes = "CastSizes"
+    warnCastSizes = "CastSizes", # deadcode
     warnAboveMaxSizeSet = "AboveMaxSizeSet",
     warnImplicitTemplateRedefinition = "ImplicitTemplateRedefinition",
     warnUnnamedBreak = "UnnamedBreak",
@@ -94,7 +94,6 @@ type
     # hints
     hintSuccess = "Success", hintSuccessX = "SuccessX",
     hintCC = "CC",
-    hintLineTooLong = "LineTooLong",
     hintXDeclaredButNotUsed = "XDeclaredButNotUsed", hintDuplicateModuleImport = "DuplicateModuleImport",
     hintXCannotRaiseY = "XCannotRaiseY", hintConvToBaseNotNeeded = "ConvToBaseNotNeeded",
     hintConvFromXtoItselfNotNeeded = "ConvFromXtoItselfNotNeeded", hintExprAlwaysX = "ExprAlwaysX",
@@ -186,7 +185,7 @@ const
     warnCstringConv: "$1",
     warnPtrToCstringConv: "unsafe conversion to 'cstring' from '$1'; this will become a compile time error in the future",
     warnEffect: "$1",
-    warnCastSizes: "$1",
+    warnCastSizes: "$1", # deadcode
     warnAboveMaxSizeSet: "$1",
     warnImplicitTemplateRedefinition: "template '$1' is implicitly redefined; this is deprecated, add an explicit .redefine pragma",
     warnUnnamedBreak: "Using an unnamed break in a block is deprecated; Use a named block with a named break instead",
@@ -198,7 +197,6 @@ const
     # keep in sync with `testament.isSuccess`
     hintSuccessX: "$build\n$loc lines; ${sec}s; $mem; proj: $project; out: $output",
     hintCC: "CC: $1",
-    hintLineTooLong: "line too long",
     hintXDeclaredButNotUsed: "'$1' is declared but not used",
     hintDuplicateModuleImport: "$1",
     hintXCannotRaiseY: "$1",
@@ -248,7 +246,7 @@ type
   TNoteKinds* = set[TNoteKind]
 
 proc computeNotesVerbosity(): array[0..3, TNoteKinds] =
-  result[3] = {low(TNoteKind)..high(TNoteKind)} - {warnObservableStores, warnResultUsed, warnAnyEnumConv}
+  result[3] = {low(TNoteKind)..high(TNoteKind)} - {warnObservableStores, warnResultUsed, warnAnyEnumConv, warnBareExcept}
   result[2] = result[3] - {hintStackTrace, hintExtendedContext, hintDeclaredLoc, hintProcessingStmt}
   result[1] = result[2] - {warnProveField, warnProveIndex,
     warnGcUnsafe, hintPath, hintDependency, hintCodeBegin, hintCodeEnd,
@@ -279,7 +277,7 @@ type
                                # and parsed; usually "" but is used
                                # for 'nimsuggest'
     hash*: string              # the checksum of the file
-    dirty*: bool               # for 'nimfix' / 'nimpretty' like tooling
+    dirty*: bool               # for 'nimpretty' like tooling
     when defined(nimpretty):
       fullContent*: string
   FileIndex* = distinct int32

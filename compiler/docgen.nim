@@ -259,7 +259,16 @@ template declareClosures(currentFilename: AbsoluteFile, destFile: string) =
     of mwUnusedImportdoc: k = warnRstUnusedImportdoc
     of mwRstStyle: k = warnRstStyle
     {.gcsafe.}:
-      globalError(conf, newLineInfo(conf, AbsoluteFile filename, line, col), k, arg)
+      let errorsAsWarnings = (roPreferMarkdown in d.sharedState.options) and
+          not d.standaloneDoc  # not tolerate errors in .rst/.md files
+      if whichMsgClass(msgKind) == mcError and errorsAsWarnings:
+        liMessage(conf, newLineInfo(conf, AbsoluteFile filename, line, col),
+                  k, arg, doNothing, instLoc(), ignoreError=true)
+        # when our Markdown parser fails, we currently can only terminate the
+        # parsing (and then we will return monospaced text instead of markup):
+        raiseRecoverableError("")
+      else:
+        globalError(conf, newLineInfo(conf, AbsoluteFile filename, line, col), k, arg)
 
   proc docgenFindFile(s: string): string {.gcsafe.} =
     result = options.findFile(conf, s).string
@@ -311,8 +320,9 @@ proc newDocumentor*(filename: AbsoluteFile; cache: IdentCache; conf: ConfigRef,
                     standaloneDoc = false, preferMarkdown = true,
                     hasToc = true): PDoc =
   let destFile = getOutFile2(conf, presentationPath(conf, filename), outExt, false).string
-  declareClosures(currentFilename = filename, destFile = destFile)
   new(result)
+  let d = result  # pass `d` to `declareClosures`:
+  declareClosures(currentFilename = filename, destFile = destFile)
   result.module = module
   result.conf = conf
   result.cache = cache
@@ -418,10 +428,13 @@ proc getVarIdx(varnames: openArray[string], id: string): int =
 proc genComment(d: PDoc, n: PNode): PRstNode =
   if n.comment.len > 0:
     d.sharedState.currFileIdx = addRstFileIndex(d, n.info)
-    result = parseRst(n.comment,
-                      toLinenumber(n.info),
-                      toColumn(n.info) + DocColOffset,
-                      d.conf, d.sharedState)
+    try:
+      result = parseRst(n.comment,
+                        toLinenumber(n.info),
+                        toColumn(n.info) + DocColOffset,
+                        d.conf, d.sharedState)
+    except ERecoverableError:
+      result = newRstNode(rnLiteralBlock, @[newRstLeaf(n.comment)])
 
 proc genRecCommentAux(d: PDoc, n: PNode): PRstNode =
   if n == nil: return nil
@@ -1811,13 +1824,16 @@ proc commandRstAux(cache: IdentCache, conf: ConfigRef;
   var filen = addFileExt(filename, "txt")
   var d = newDocumentor(filen, cache, conf, outExt, standaloneDoc = true,
                         preferMarkdown = preferMarkdown, hasToc = false)
-  let rst = parseRst(readFile(filen.string),
-                     line=LineRstInit, column=ColRstInit,
-                     conf, d.sharedState)
-  d.modDescPre = @[ItemFragment(isRst: true, rst: rst)]
-  finishGenerateDoc(d)
-  writeOutput(d)
-  generateIndex(d)
+  try:
+    let rst = parseRst(readFile(filen.string),
+                      line=LineRstInit, column=ColRstInit,
+                      conf, d.sharedState)
+    d.modDescPre = @[ItemFragment(isRst: true, rst: rst)]
+    finishGenerateDoc(d)
+    writeOutput(d)
+    generateIndex(d)
+  except ERecoverableError:
+    discard "already reported the error"
 
 proc commandRst2Html*(cache: IdentCache, conf: ConfigRef,
                       preferMarkdown=false) =

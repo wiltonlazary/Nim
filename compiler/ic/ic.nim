@@ -7,12 +7,14 @@
 #    distribution, for details about the copyright.
 #
 
-import hashes, tables, intsets, std/sha1
+import hashes, tables, intsets
 import packed_ast, bitabs, rodfiles
 import ".." / [ast, idents, lineinfos, msgs, ropes, options,
   pathutils, condsyms, packages, modulepaths]
 #import ".." / [renderer, astalgo]
 from os import removeFile, isAbsolute
+
+import ../../dist/checksums/src/checksums/sha1
 
 when defined(nimPreviewSlimSystem):
   import std/[syncio, assertions, formatfloat]
@@ -372,7 +374,7 @@ proc toPackedLib(l: PLib; c: var PackedEncoder; m: var PackedModule): PackedLib 
   if l.isNil: return
   result.kind = l.kind
   result.generated = l.generated
-  result.isOverriden = l.isOverriden
+  result.isOverridden = l.isOverridden
   result.name = toLitId($l.name, m)
   storeNode(result, l, path)
 
@@ -848,7 +850,7 @@ proc loadLib(c: var PackedDecoder; g: var PackedModuleGraph;
   if l.name.int == 0:
     result = nil
   else:
-    result = PLib(generated: l.generated, isOverriden: l.isOverriden,
+    result = PLib(generated: l.generated, isOverridden: l.isOverridden,
                   kind: l.kind, name: rope g[si].fromDisk.strings[l.name])
     loadAstBody(l, path)
 

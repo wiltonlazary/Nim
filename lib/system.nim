@@ -25,7 +25,11 @@
 include "system/basic_types"
 
 func zeroDefault*[T](_: typedesc[T]): T {.magic: "ZeroDefault".} =
-  ## returns the default value of the type `T`.
+  ## Returns the binary zeros representation of the type `T`. It ignores
+  ## default fields of an object.
+  ##
+  ## See also:
+  ## * `default <#default,typedesc[T]>`_
 
 include "system/compilation"
 
@@ -137,15 +141,20 @@ proc new*[T](a: var ref T, finalizer: proc (x: ref T) {.nimcall.}) {.
   ## **Note**: The `finalizer` refers to the type `T`, not to the object!
   ## This means that for each object of type `T` the finalizer will be called!
 
-proc wasMoved*[T](obj: var T) {.magic: "WasMoved", noSideEffect.} =
+proc `=wasMoved`*[T](obj: var T) {.magic: "WasMoved", noSideEffect.} =
+  ## Generic `wasMoved`:idx: implementation that can be overridden.
+
+proc wasMoved*[T](obj: var T) {.inline, noSideEffect.} =
   ## Resets an object `obj` to its initial (binary zero) value to signify
   ## it was "moved" and to signify its destructor should do nothing and
   ## ideally be optimized away.
-  discard
+  {.cast(raises: []), cast(tags: []).}:
+    `=wasMoved`(obj)
 
 proc move*[T](x: var T): T {.magic: "Move", noSideEffect.} =
   result = x
-  wasMoved(x)
+  {.cast(raises: []), cast(tags: []).}:
+    `=wasMoved`(x)
 
 type
   range*[T]{.magic: "Range".}         ## Generic type to construct range types.
@@ -320,7 +329,7 @@ proc low*(x: string): int {.magic: "Low", noSideEffect.}
   ## See also:
   ## * `high(string) <#high,string>`_
 
-when not defined(gcArc) and not defined(gcOrc):
+when not defined(gcArc) and not defined(gcOrc) and not defined(gcAtomicArc):
   proc shallowCopy*[T](x: var T, y: T) {.noSideEffect, magic: "ShallowCopy".}
     ## Use this instead of `=` for a `shallow copy`:idx:.
     ##
@@ -344,12 +353,31 @@ proc arrGet[I: Ordinal;T](a: T; i: I): T {.
 proc arrPut[I: Ordinal;T,S](a: T; i: I;
   x: S) {.noSideEffect, magic: "ArrPut".}
 
+const arcLikeMem = defined(gcArc) or defined(gcAtomicArc) or defined(gcOrc)
+
+
+when defined(nimAllowNonVarDestructor) and arcLikeMem:
+  proc `=destroy`*(x: string) {.inline, magic: "Destroy".} =
+    discard
+
+  proc `=destroy`*[T](x: seq[T]) {.inline, magic: "Destroy".} =
+    discard
+
+  proc `=destroy`*[T](x: ref T) {.inline, magic: "Destroy".} =
+    discard
+
 proc `=destroy`*[T](x: var T) {.inline, magic: "Destroy".} =
   ## Generic `destructor`:idx: implementation that can be overridden.
   discard
+
+when defined(nimHasDup):
+  proc `=dup`*[T](x: T): T {.inline, magic: "Dup".} =
+    ## Generic `dup`:idx: implementation that can be overridden.
+    discard
+
 proc `=sink`*[T](x: var T; y: T) {.inline, nodestroy, magic: "Asgn".} =
   ## Generic `sink`:idx: implementation that can be overridden.
-  when defined(gcArc) or defined(gcOrc):
+  when defined(gcArc) or defined(gcOrc) or defined(gcAtomicArc):
     x = y
   else:
     shallowCopy(x, y)
@@ -880,27 +908,31 @@ proc `@`* [IDX, T](a: sink array[IDX, T]): seq[T] {.magic: "ArrToSeq", noSideEff
   ##   ```
 
 proc default*[T](_: typedesc[T]): T {.magic: "Default", noSideEffect.} =
-  ## returns the default value of the type `T`.
+  ## Returns the default value of the type `T`. Contrary to `zeroDefault`, it takes default fields
+  ## of an object into consideration.
+  ##
+  ## See also:
+  ## * `zeroDefault <#zeroDefault,typedesc[T]>`_
+  ##
   runnableExamples:
     assert (int, float).default == (0, 0.0)
-    # note: `var a = default(T)` is usually the same as `var a: T` and (currently) generates
-    # a value whose binary representation is all 0, regardless of whether this
-    # would violate type constraints such as `range`, `not nil`, etc. This
-    # property is required to implement certain algorithms efficiently which
-    # may require intermediate invalid states.
     type Foo = object
       a: range[2..6]
-    var a1: range[2..6] # currently, this compiles
-    # var a2: Foo # currently, this errors: Error: The Foo type doesn't have a default value.
-    # var a3 = Foo() # ditto
-    var a3 = Foo.default # this works, but generates a `UnsafeDefault` warning.
-  # note: the doc comment also explains why `default` can't be implemented
-  # via: `template default*[T](t: typedesc[T]): T = (var v: T; v)`
+    var x = Foo.default
+    assert x.a == 2
 
 
 proc reset*[T](obj: var T) {.noSideEffect.} =
   ## Resets an object `obj` to its default value.
-  obj = default(typeof(obj))
+  when nimvm:
+    obj = default(typeof(obj))
+  else:
+    when defined(gcDestructors):
+      {.cast(noSideEffect), cast(raises: []), cast(tags: []).}:
+        `=destroy`(obj)
+        `=wasMoved`(obj)
+    else:
+      obj = default(typeof(obj))
 
 proc setLen*[T](s: var seq[T], newlen: Natural) {.
   magic: "SetLengthSeq", noSideEffect.}
@@ -1577,7 +1609,7 @@ when not defined(js) and defined(nimV2):
       align: int16
       depth: int16
       display: ptr UncheckedArray[uint32] # classToken
-      when defined(nimTypeNames):
+      when defined(nimTypeNames) or defined(nimArcIds):
         name: cstring
       traceImpl: pointer
       typeInfoV1: pointer # for backwards compat, usually nil
@@ -2317,7 +2349,7 @@ when compileOption("rangechecks"):
 else:
   template rangeCheck*(cond) = discard
 
-when not defined(gcArc) and not defined(gcOrc):
+when not defined(gcArc) and not defined(gcOrc) and not defined(gcAtomicArc):
   proc shallow*[T](s: var seq[T]) {.noSideEffect, inline.} =
     ## Marks a sequence `s` as `shallow`:idx:. Subsequent assignments will not
     ## perform deep copies of `s`.
@@ -2374,7 +2406,7 @@ when hasAlloc or defined(nimscript):
     setLen(x, xl+item.len)
     var j = xl-1
     while j >= i:
-      when defined(gcArc) or defined(gcOrc):
+      when defined(gcArc) or defined(gcOrc) or defined(gcAtomicArc):
         x[j+item.len] = move x[j]
       else:
         shallowCopy(x[j+item.len], x[j])
@@ -2767,7 +2799,10 @@ when notJSnotNims and not defined(nimSeqsV2):
       assert y == "abcgh"
     discard
 
-proc nimArrayWith[T](y: T, size: static int): array[size, T] {.compilerRtl, raises: [].} =
+proc arrayWith*[T](y: T, size: static int): array[size, T] {.raises: [].} =
   ## Creates a new array filled with `y`.
   for i in 0..size-1:
-    result[i] = y
+    when nimvm:
+      result[i] = y
+    else:
+      result[i] = `=dup`(y)

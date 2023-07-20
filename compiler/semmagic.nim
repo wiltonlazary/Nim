@@ -215,6 +215,10 @@ proc evalTypeTrait(c: PContext; traitCall: PNode, operand: PType, context: PSym)
     var arg = operand.skipTypes({tyGenericInst})
     assert arg.kind == tyRange
     result = getTypeDescNode(c, arg.base, operand.owner, traitCall.info)
+  of "isCyclic":
+    var operand = operand.skipTypes({tyGenericInst})
+    let isCyclic = canFormAcycle(c.graph, operand)
+    result = newIntNodeT(toInt128(ord(isCyclic)), traitCall, c.idgen, c.graph)
   else:
     localError(c.config, traitCall.info, "unknown trait: " & s)
     result = newNodeI(nkEmpty, traitCall.info)
@@ -520,7 +524,9 @@ proc semNewFinalize(c: PContext; n: PNode): PNode =
 
 proc semPrivateAccess(c: PContext, n: PNode): PNode =
   let t = n[1].typ[0].toObjectFromRefPtrGeneric
-  c.currentScope.allowPrivateAccess.add t.sym
+  if t.kind == tyObject:
+    assert t.sym != nil
+    c.currentScope.allowPrivateAccess.add t.sym
   result = newNodeIT(nkEmpty, n.info, getSysType(c.graph, n.info, tyVoid))
 
 proc checkDefault(c: PContext, n: PNode): PNode =
@@ -603,12 +609,28 @@ proc magicsAfterOverloadResolution(c: PContext, n: PNode,
     let op = getAttachedOp(c.graph, t, attachedDestructor)
     if op != nil:
       result[0] = newSymNode(op)
+
+      if op.typ != nil and op.typ.len == 2 and op.typ[1].kind != tyVar:
+        if n[1].kind == nkSym and n[1].sym.kind == skParam and
+            n[1].typ.kind == tyVar:
+          result[1] = genDeref(n[1])
+        else:
+          result[1] = skipAddr(n[1])
   of mTrace:
     result = n
     let t = n[1].typ.skipTypes(abstractVar)
     let op = getAttachedOp(c.graph, t, attachedTrace)
     if op != nil:
       result[0] = newSymNode(op)
+  of mWasMoved:
+    result = n
+    let t = n[1].typ.skipTypes(abstractVar)
+    let op = getAttachedOp(c.graph, t, attachedWasMoved)
+    if op != nil:
+      result[0] = newSymNode(op)
+      let addrExp = newNodeIT(nkHiddenAddr, result[1].info, makePtrType(c, t))
+      addrExp.add result[1]
+      result[1] = addrExp
   of mUnown:
     result = semUnown(c, n)
   of mExists, mForall:
