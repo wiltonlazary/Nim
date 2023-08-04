@@ -238,6 +238,9 @@ proc checkConvertible(c: PContext, targetTyp: PType, src: PNode): TConvStatus =
         result = convNotInRange
   else:
     # we use d, s here to speed up that operation a bit:
+    if d.kind == tyFromExpr:
+      result = convNotLegal
+      return
     case cmpTypes(c, d, s)
     of isNone, isGeneric:
       if not compareTypes(targetTyp.skipTypes(abstractVar), srcTyp.skipTypes({tyOwned}), dcEqIgnoreDistinct):
@@ -952,17 +955,17 @@ proc semStaticExpr(c: PContext, n: PNode; expectedType: PType = nil): PNode =
     result = fixupTypeAfterEval(c, result, a)
 
 proc semOverloadedCallAnalyseEffects(c: PContext, n: PNode, nOrig: PNode,
-                                     flags: TExprFlags): PNode =
+                                     flags: TExprFlags; expectedType: PType = nil): PNode =
   if flags*{efInTypeof, efWantIterator, efWantIterable} != {}:
     # consider: 'for x in pReturningArray()' --> we don't want the restriction
     # to 'skIterator' anymore; skIterator is preferred in sigmatch already
     # for typeof support.
     # for ``typeof(countup(1,3))``, see ``tests/ttoseq``.
     result = semOverloadedCall(c, n, nOrig,
-      {skProc, skFunc, skMethod, skConverter, skMacro, skTemplate, skIterator}, flags)
+      {skProc, skFunc, skMethod, skConverter, skMacro, skTemplate, skIterator}, flags, expectedType)
   else:
     result = semOverloadedCall(c, n, nOrig,
-      {skProc, skFunc, skMethod, skConverter, skMacro, skTemplate}, flags)
+      {skProc, skFunc, skMethod, skConverter, skMacro, skTemplate}, flags, expectedType)
 
   if result != nil:
     if result[0].kind != nkSym:
@@ -1138,7 +1141,7 @@ proc semDirectOp(c: PContext, n: PNode, flags: TExprFlags; expectedType: PType =
   # this seems to be a hotspot in the compiler!
   let nOrig = n.copyTree
   #semLazyOpAux(c, n)
-  result = semOverloadedCallAnalyseEffects(c, n, nOrig, flags)
+  result = semOverloadedCallAnalyseEffects(c, n, nOrig, flags, expectedType)
   if result != nil: result = afterCallActions(c, result, nOrig, flags, expectedType)
   else: result = errorNode(c, n)
 
@@ -3120,7 +3123,7 @@ proc semExpr(c: PContext, n: PNode, flags: TExprFlags = {}, expectedType: PType 
         elif s.magic == mNone: result = semDirectOp(c, n, flags, expectedType)
         else: result = semMagic(c, n, s, flags, expectedType)
       of skProc, skFunc, skMethod, skConverter, skIterator:
-        if s.magic == mNone: result = semDirectOp(c, n, flags)
+        if s.magic == mNone: result = semDirectOp(c, n, flags, expectedType)
         else: result = semMagic(c, n, s, flags, expectedType)
       else:
         #liMessage(n.info, warnUser, renderTree(n));
@@ -3282,7 +3285,9 @@ proc semExpr(c: PContext, n: PNode, flags: TExprFlags = {}, expectedType: PType 
   of nkDefer:
     if c.currentScope == c.topLevelScope:
       localError(c.config, n.info, "defer statement not supported at top level")
+    openScope(c)
     n[0] = semExpr(c, n[0])
+    closeScope(c)
     if not n[0].typ.isEmptyType and not implicitlyDiscardable(n[0]):
       localError(c.config, n.info, "'defer' takes a 'void' expression")
     #localError(c.config, n.info, errGenerated, "'defer' not allowed in this context")

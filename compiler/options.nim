@@ -49,6 +49,7 @@ type                          # please make sure we have under 32 options
     optSinkInference          # 'sink T' inference
     optCursorInference
     optImportHidden
+    optQuirky
 
   TOptions* = set[TOption]
   TGlobalOption* = enum
@@ -208,7 +209,7 @@ type
     codeReordering,
     compiletimeFFI,
       ## This requires building nim with `-d:nimHasLibFFI`
-      ## which itself requires `nimble install libffi`, see #10150
+      ## which itself requires `koch installdeps libffi`, see #10150
       ## Note: this feature can't be localized with {.push.}
     vmopsDanger,
     strictFuncs,
@@ -219,7 +220,8 @@ type
     unicodeOperators, # deadcode
     flexibleOptionalParams,
     strictDefs,
-    strictCaseObjects
+    strictCaseObjects,
+    inferGenericTypes
 
   LegacyFeature* = enum
     allowSemcheckedAstModification,
