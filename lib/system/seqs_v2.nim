@@ -32,6 +32,10 @@ type
     len: int
     p: ptr NimSeqPayload[T]
 
+  NimRawSeq = object
+    len: int
+    p: pointer
+
 const nimSeqVersion {.core.} = 2
 
 # XXX make code memory safe for overflows in '*'
@@ -41,6 +45,15 @@ proc newSeqPayload(cap, elemSize, elemAlign: int): pointer {.compilerRtl, raises
   # compilerProcs. Oh well, this will all be inlined anyway.
   if cap > 0:
     var p = cast[ptr NimSeqPayloadBase](alignedAlloc0(align(sizeof(NimSeqPayloadBase), elemAlign) + cap * elemSize, elemAlign))
+    p.cap = cap
+    result = p
+  else:
+    result = nil
+
+proc newSeqPayloadUninit(cap, elemSize, elemAlign: int): pointer {.compilerRtl, raises: [].} =
+  # Used in `newSeqOfCap()`.
+  if cap > 0:
+    var p = cast[ptr NimSeqPayloadBase](alignedAlloc(align(sizeof(NimSeqPayloadBase), elemAlign) + cap * elemSize, elemAlign))
     p.cap = cap
     result = p
   else:
@@ -121,7 +134,7 @@ proc add*[T](x: var seq[T]; y: sink T) {.magic: "AppendSeqElem", noSideEffect, n
     # We also save the `wasMoved + destroy` pair for the sink parameter.
     xu.p.data[oldLen] = y
 
-proc setLen[T](s: var seq[T], newlen: Natural) =
+proc setLen[T](s: var seq[T], newlen: Natural) {.nodestroy.} =
   {.noSideEffect.}:
     if newlen < s.len:
       shrink(s, newlen)
@@ -139,6 +152,8 @@ proc newSeq[T](s: var seq[T], len: Natural) =
   shrink(s, 0)
   setLen(s, len)
 
+proc sameSeqPayload(x: pointer, y: pointer): bool {.compilerproc, inline.} =
+  result = cast[ptr NimRawSeq](x)[].p == cast[ptr NimRawSeq](y)[].p
 
 template capacityImpl(sek: NimSeqV2): int =
   if sek.p != nil: (sek.p.cap and not strlitFlag) else: 0
