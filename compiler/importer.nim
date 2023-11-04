@@ -10,10 +10,12 @@
 ## This module implements the symbol importing mechanism.
 
 import
-  intsets, ast, astalgo, msgs, options, idents, lookups,
-  semdata, modulepaths, sigmatch, lineinfos, sets,
-  modulegraphs, wordrecg, tables
-from strutils import `%`
+  ast, astalgo, msgs, options, idents, lookups,
+  semdata, modulepaths, sigmatch, lineinfos,
+  modulegraphs, wordrecg
+from std/strutils import `%`, startsWith
+from std/sequtils import addUnique
+import std/[sets, tables, intsets]
 
 when defined(nimPreviewSlimSystem):
   import std/assertions
@@ -228,11 +230,6 @@ proc importForwarded(c: PContext, n: PNode, exceptSet: IntSet; fromMod: PSym; im
   else:
     for i in 0..n.safeLen-1:
       importForwarded(c, n[i], exceptSet, fromMod, importSet)
-
-proc addUnique[T](x: var seq[T], y: sink T) {.noSideEffect.} =
-  for i in 0..high(x):
-    if x[i] == y: return
-  x.add y
     
 proc importModuleAs(c: PContext; n: PNode, realModule: PSym, importHidden: bool): PSym =
   result = realModule
@@ -305,6 +302,10 @@ proc myImportModule(c: PContext, n: var PNode, importStmtResult: PNode): PSym =
       var prefix = ""
       if realModule.constraint != nil: prefix = realModule.constraint.strVal & "; "
       message(c.config, n.info, warnDeprecated, prefix & realModule.name.s & " is deprecated")
+    let moduleName = getModuleName(c.config, n)
+    if belongsToStdlib(c.graph, result) and not startsWith(moduleName, stdPrefix) and
+        not startsWith(moduleName, "system/") and not startsWith(moduleName, "packages/"):
+      message(c.config, n.info, warnStdPrefix, realModule.name.s)
     suggestSym(c.graph, n.info, result, c.graph.usageSym, false)
     importStmtResult.add newSymNode(result, n.info)
     #newStrNode(toFullPath(c.config, f), n.info)

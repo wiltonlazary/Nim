@@ -23,7 +23,7 @@
 ##   waitFor main()
 ##   ```
 
-import asyncdispatch, os
+import std/[asyncdispatch, os]
 
 when defined(nimPreviewSlimSystem):
   import std/[assertions, syncio]
@@ -33,9 +33,9 @@ when defined(nimPreviewSlimSystem):
 # TODO: Fix duplication introduced by PR #4683.
 
 when defined(windows) or defined(nimdoc):
-  import winlean
+  import std/winlean
 else:
-  import posix
+  import std/posix
 
 type
   AsyncFile* = ref object
@@ -301,6 +301,8 @@ proc readLine*(f: AsyncFile): Future[string] {.async.} =
   result = ""
   while true:
     var c = await read(f, 1)
+    if c.len == 0:
+      break
     if c[0] == '\c':
       c = await read(f, 1)
       break

@@ -1,7 +1,8 @@
 ## A BiTable is a table that can be seen as an optimized pair
 ## of `(Table[LitId, Val], Table[Val, LitId])`.
 
-import hashes, rodfiles
+import std/hashes
+import rodfiles
 
 when defined(nimPreviewSlimSystem):
   import std/assertions
@@ -12,6 +13,8 @@ type
   BiTable*[T] = object
     vals: seq[T] # indexed by LitId
     keys: seq[LitId]  # indexed by hash(val)
+
+proc initBiTable*[T](): BiTable[T] = BiTable[T](vals: @[], keys: @[])
 
 proc nextTry(h, maxHash: Hash): Hash {.inline.} =
   result = (h + 1) and maxHash

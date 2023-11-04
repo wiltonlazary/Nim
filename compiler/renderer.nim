@@ -14,7 +14,9 @@
 {.used.}
 
 import
-  lexer, options, idents, strutils, ast, msgs, lineinfos, wordrecg
+  lexer, options, idents, ast, msgs, lineinfos, wordrecg
+
+import std/[strutils]
 
 when defined(nimPreviewSlimSystem):
   import std/[syncio, assertions, formatfloat]
@@ -586,7 +588,7 @@ proc lsub(g: TSrcGen; n: PNode): int =
     if n.len > 1: result = MaxLineLen + 1
     else: result = lsons(g, n) + len("using_")
   of nkReturnStmt:
-    if n.len > 0 and n[0].kind == nkAsgn:
+    if n.len > 0 and n[0].kind == nkAsgn and renderIr notin g.flags:
       result = len("return_") + lsub(g, n[0][1])
     else:
       result = len("return_") + lsub(g, n[0])
@@ -864,7 +866,7 @@ proc gproc(g: var TSrcGen, n: PNode) =
   if renderNoPragmas notin g.flags:
     gsub(g, n[pragmasPos])
   if renderNoBody notin g.flags:
-    if n[bodyPos].kind != nkEmpty:
+    if n.len > bodyPos and n[bodyPos].kind != nkEmpty:
       put(g, tkSpaces, Space)
       putWithSpace(g, tkEquals, "=")
       indentNL(g)
@@ -1635,7 +1637,7 @@ proc gsub(g: var TSrcGen, n: PNode, c: TContext, fromStmtList = false) =
       gsub(g, n[0])
   of nkReturnStmt:
     putWithSpace(g, tkReturn, "return")
-    if n.len > 0 and n[0].kind == nkAsgn:
+    if n.len > 0 and n[0].kind == nkAsgn and renderIr notin g.flags:
       gsub(g, n[0], 1)
     else:
       gsub(g, n, 0)

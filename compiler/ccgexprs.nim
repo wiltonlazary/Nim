@@ -112,11 +112,6 @@ proc genLiteral(p: BProc, n: PNode, ty: PType; result: var Rope) =
 proc genLiteral(p: BProc, n: PNode; result: var Rope) =
   genLiteral(p, n, n.typ, result)
 
-proc bitSetToWord(s: TBitSet, size: int): BiggestUInt =
-  result = 0
-  for j in 0..<size:
-    if j < s.len: result = result or (BiggestUInt(s[j]) shl (j * 8))
-
 proc genRawSetData(cs: TBitSet, size: int; result: var Rope) =
   if size > 8:
     var res = "{\n"
@@ -856,6 +851,12 @@ proc lookupFieldAgain(p: BProc, ty: PType; field: PSym; r: var Rope;
 
 proc genRecordField(p: BProc, e: PNode, d: var TLoc) =
   var a: TLoc = default(TLoc)
+  if p.module.compileToCpp and e.kind == nkDotExpr and e[1].kind == nkSym and e[1].typ.kind == tyPtr:
+    # special case for C++: we need to pull the type of the field as member and friends require the complete type.
+    let typ = e[1].typ[0]
+    if typ.itemId in p.module.g.graph.memberProcsPerType:
+      discard getTypeDesc(p.module, typ)
+
   genRecordFieldAux(p, e, d, a)
   var r = rdLoc(a)
   var f = e[1].sym
@@ -1494,8 +1495,27 @@ proc handleConstExpr(p: BProc, n: PNode, d: var TLoc): bool =
   else:
     result = false
 
+
+proc genFieldObjConstr(p: BProc; ty: PType; useTemp, isRef: bool; nField, val, check: PNode; d: var TLoc; r: Rope; info: TLineInfo) =
+  var tmp2: TLoc = default(TLoc)
+  tmp2.r = r
+  let field = lookupFieldAgain(p, ty, nField.sym, tmp2.r)
+  if field.loc.r == "": fillObjectFields(p.module, ty)
+  if field.loc.r == "": internalError(p.config, info, "genFieldObjConstr")
+  if check != nil and optFieldCheck in p.options:
+    genFieldCheck(p, check, r, field)
+  tmp2.r.add(".")
+  tmp2.r.add(field.loc.r)
+  if useTemp:
+    tmp2.k = locTemp
+    tmp2.storage = if isRef: OnHeap else: OnStack
+  else:
+    tmp2.k = d.k
+    tmp2.storage = if isRef: OnHeap else: d.storage
+  tmp2.lode = val
+  expr(p, val, tmp2)
+
 proc genObjConstr(p: BProc, e: PNode, d: var TLoc) =
-  #echo renderTree e, " ", e.isDeepConstExpr
   # inheritance in C++ does not allow struct initialization so
   # we skip this step here:
   if not p.module.compileToCpp and optSeqDestructors notin p.config.globalOptions:
@@ -1518,6 +1538,7 @@ proc genObjConstr(p: BProc, e: PNode, d: var TLoc) =
 
   var tmp: TLoc = default(TLoc)
   var r: Rope
+  let needsZeroMem = p.config.selectedGC notin {gcArc, gcAtomicArc, gcOrc} or nfAllFieldsSet notin e.flags
   if useTemp:
     tmp = getTemp(p, t)
     r = rdLoc(tmp)
@@ -1526,32 +1547,22 @@ proc genObjConstr(p: BProc, e: PNode, d: var TLoc) =
       t = t.lastSon.skipTypes(abstractInstOwned)
       r = "(*$1)" % [r]
       gcUsage(p.config, e)
-    else:
+    elif needsZeroMem:
       constructLoc(p, tmp)
+    else:
+      genObjectInit(p, cpsStmts, t, tmp, constructObj)
   else:
-    resetLoc(p, d)
+    if needsZeroMem: resetLoc(p, d)
+    else: genObjectInit(p, cpsStmts, d.t, d, if isRef: constructRefObj else: constructObj)
     r = rdLoc(d)
   discard getTypeDesc(p.module, t)
   let ty = getUniqueType(t)
   for i in 1..<e.len:
-    let it = e[i]
-    var tmp2: TLoc = default(TLoc)
-    tmp2.r = r
-    let field = lookupFieldAgain(p, ty, it[0].sym, tmp2.r)
-    if field.loc.r == "": fillObjectFields(p.module, ty)
-    if field.loc.r == "": internalError(p.config, e.info, "genObjConstr")
-    if it.len == 3 and optFieldCheck in p.options:
-      genFieldCheck(p, it[2], r, field)
-    tmp2.r.add(".")
-    tmp2.r.add(field.loc.r)
-    if useTemp:
-      tmp2.k = locTemp
-      tmp2.storage = if isRef: OnHeap else: OnStack
-    else:
-      tmp2.k = d.k
-      tmp2.storage = if isRef: OnHeap else: d.storage
-    tmp2.lode = it[1]
-    expr(p, it[1], tmp2)
+    var check: PNode = nil
+    if e[i].len == 3 and optFieldCheck in p.options:
+      check = e[i][2]
+    genFieldObjConstr(p, ty, useTemp, isRef, e[i][0], e[i][1], check, d, r, e.info)
+
   if useTemp:
     if d.k == locNone:
       d = tmp
@@ -1858,8 +1869,8 @@ proc genArrayLen(p: BProc, e: PNode, d: var TLoc, op: TMagic) =
           else:
             unaryExpr(p, e, d, "$1.Field1")
   of tyCstring:
-    if op == mHigh: unaryExpr(p, e, d, "($1 ? (#nimCStrLen($1)-1) : -1)")
-    else: unaryExpr(p, e, d, "($1 ? #nimCStrLen($1) : 0)")
+    if op == mHigh: unaryExpr(p, e, d, "(#nimCStrLen($1)-1)")
+    else: unaryExpr(p, e, d, "#nimCStrLen($1)")
   of tyString:
     var a: TLoc = initLocExpr(p, e[1])
     var x = lenExpr(p, a)
@@ -1878,13 +1889,6 @@ proc genArrayLen(p: BProc, e: PNode, d: var TLoc, op: TMagic) =
     if op == mHigh: putIntoDest(p, d, e, rope(lastOrd(p.config, typ)))
     else: putIntoDest(p, d, e, rope(lengthOrd(p.config, typ)))
   else: internalError(p.config, e.info, "genArrayLen()")
-
-proc makeAddr(n: PNode; idgen: IdGenerator): PNode =
-  if n.kind == nkHiddenAddr:
-    result = n
-  else:
-    result = newTree(nkHiddenAddr, n)
-    result.typ = makePtrType(n.typ, idgen)
 
 proc genSetLengthSeq(p: BProc, e: PNode, d: var TLoc) =
   if optSeqDestructors in p.config.globalOptions:
@@ -2281,9 +2285,6 @@ proc binaryFloatArith(p: BProc, e: PNode, d: var TLoc, m: TMagic) =
   else:
     binaryArith(p, e, d, m)
 
-proc skipAddr(n: PNode): PNode =
-  result = if n.kind in {nkAddr, nkHiddenAddr}: n[0] else: n
-
 proc genWasMoved(p: BProc; n: PNode) =
   var a: TLoc
   let n1 = n[1].skipAddr
@@ -2511,8 +2512,12 @@ proc genMagicExpr(p: BProc, e: PNode, d: var TLoc, op: TMagic) =
   of mOrd: genOrd(p, e, d)
   of mLengthArray, mHigh, mLengthStr, mLengthSeq, mLengthOpenArray:
     genArrayLen(p, e, d, op)
-  of mGCref: unaryStmt(p, e, d, "if ($1) { #nimGCref($1); }$n")
-  of mGCunref: unaryStmt(p, e, d, "if ($1) { #nimGCunref($1); }$n")
+  of mGCref:
+    # only a magic for the old GCs
+    unaryStmt(p, e, d, "if ($1) { #nimGCref($1); }$n")
+  of mGCunref:
+    # only a magic for the old GCs
+    unaryStmt(p, e, d, "if ($1) { #nimGCunref($1); }$n")
   of mSetLengthStr: genSetLengthStr(p, e, d)
   of mSetLengthSeq: genSetLengthSeq(p, e, d)
   of mIncl, mExcl, mCard, mLtSet, mLeSet, mEqSet, mMulSet, mPlusSet, mMinusSet,
@@ -3206,22 +3211,6 @@ proc getDefaultValue(p: BProc; typ: PType; info: TLineInfo; result: var Rope) =
     else: result.add "0"
   else:
     globalError(p.config, info, "cannot create null element for: " & $t.kind)
-
-proc caseObjDefaultBranch(obj: PNode; branch: Int128): int =
-  result = 0
-  for i in 1 ..< obj.len:
-    for j in 0 .. obj[i].len - 2:
-      if obj[i][j].kind == nkRange:
-        let x = getOrdValue(obj[i][j][0])
-        let y = getOrdValue(obj[i][j][1])
-        if branch >= x and branch <= y:
-          return i
-      elif getOrdValue(obj[i][j]) == branch:
-        return i
-    if obj[i].len == 1:
-      # else branch
-      return i
-  assert(false, "unreachable")
 
 proc isEmptyCaseObjectBranch(n: PNode): bool =
   for it in n:

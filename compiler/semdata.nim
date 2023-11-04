@@ -9,14 +9,14 @@
 
 ## This module contains the data structures for the semantic checking phase.
 
-import tables
+import std/[tables, intsets, sets]
 
 when defined(nimPreviewSlimSystem):
   import std/assertions
 
 import
-  intsets, options, ast, astalgo, msgs, idents, renderer,
-  magicsys, vmdef, modulegraphs, lineinfos, sets, pathutils
+  options, ast, astalgo, msgs, idents, renderer,
+  magicsys, vmdef, modulegraphs, lineinfos, pathutils
 
 import ic / ic
 
@@ -76,6 +76,7 @@ type
     efNoDiagnostics,
     efTypeAllowed # typeAllowed will be called after
     efWantNoDefaults
+    efAllowSymChoice # symchoice node should not be resolved
 
   TExprFlags* = set[TExprFlag]
 
