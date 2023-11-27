@@ -101,7 +101,8 @@ proc sameMethodBucket(a, b: PSym; multiMethods: bool): MethodResult =
       return No
   if result == Yes:
     # check for return type:
-    if not sameTypeOrNil(a.typ[0], b.typ[0]):
+    # ignore flags of return types; # bug #22673
+    if not sameTypeOrNil(a.typ[0], b.typ[0], {IgnoreFlags}):
       if b.typ[0] != nil and b.typ[0].kind == tyUntyped:
         # infer 'auto' from the base to make it consistent:
         b.typ[0] = a.typ[0]
@@ -123,7 +124,7 @@ proc createDispatcher(s: PSym; g: ModuleGraph; idgen: IdGenerator): PSym =
   incl(disp.flags, sfDispatcher)
   excl(disp.flags, sfExported)
   let old = disp.typ
-  disp.typ = copyType(disp.typ, nextTypeId(idgen), disp.typ.owner)
+  disp.typ = copyType(disp.typ, idgen, disp.typ.owner)
   copyTypeProps(g, idgen.module, disp.typ, old)
 
   # we can't inline the dispatcher itself (for now):

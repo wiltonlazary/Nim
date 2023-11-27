@@ -366,19 +366,24 @@ proc arrPut[I: Ordinal;T,S](a: T; i: I;
 const arcLikeMem = defined(gcArc) or defined(gcAtomicArc) or defined(gcOrc)
 
 
-when defined(nimAllowNonVarDestructor) and arcLikeMem:
-  proc `=destroy`*(x: string) {.inline, magic: "Destroy".} =
+when defined(nimAllowNonVarDestructor) and arcLikeMem and defined(nimPreviewNonVarDestructor):
+  proc `=destroy`*[T](x: T) {.inline, magic: "Destroy".} =
+    ## Generic `destructor`:idx: implementation that can be overridden.
+    discard
+else:
+  proc `=destroy`*[T](x: var T) {.inline, magic: "Destroy".} =
+    ## Generic `destructor`:idx: implementation that can be overridden.
     discard
 
-  proc `=destroy`*[T](x: seq[T]) {.inline, magic: "Destroy".} =
-    discard
+  when defined(nimAllowNonVarDestructor) and arcLikeMem:
+    proc `=destroy`*(x: string) {.inline, magic: "Destroy".} =
+      discard
 
-  proc `=destroy`*[T](x: ref T) {.inline, magic: "Destroy".} =
-    discard
+    proc `=destroy`*[T](x: seq[T]) {.inline, magic: "Destroy".} =
+      discard
 
-proc `=destroy`*[T](x: var T) {.inline, magic: "Destroy".} =
-  ## Generic `destructor`:idx: implementation that can be overridden.
-  discard
+    proc `=destroy`*[T](x: ref T) {.inline, magic: "Destroy".} =
+      discard
 
 when defined(nimHasDup):
   proc `=dup`*[T](x: T): T {.inline, magic: "Dup".} =
@@ -911,18 +916,14 @@ proc default*[T](_: typedesc[T]): T {.magic: "Default", noSideEffect.} =
 proc reset*[T](obj: var T) {.noSideEffect.} =
   ## Resets an object `obj` to its default value.
   when nimvm:
-    {.push warning[UnsafeDefault]:off.}
     obj = default(typeof(obj))
-    {.pop.}
   else:
     when defined(gcDestructors):
       {.cast(noSideEffect), cast(raises: []), cast(tags: []).}:
         `=destroy`(obj)
         `=wasMoved`(obj)
     else:
-      {.push warning[UnsafeDefault]:off.}
       obj = default(typeof(obj))
-      {.pop.}
 
 proc setLen*[T](s: var seq[T], newlen: Natural) {.
   magic: "SetLengthSeq", noSideEffect, nodestroy.}
@@ -2836,7 +2837,7 @@ when notJSnotNims:
                     hostOS != "any"
 
   proc raiseEIO(msg: string) {.noinline, noreturn.} =
-    sysFatal(IOError, msg)
+    raise newException(IOError, msg)
 
   proc echoBinSafe(args: openArray[string]) {.compilerproc.} =
     when defined(androidNDK):

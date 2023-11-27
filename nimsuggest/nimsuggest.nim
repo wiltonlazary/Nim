@@ -12,6 +12,7 @@ import strformat
 import algorithm
 import tables
 import times
+import procmonitor
 
 template tryImport(module) = import module
 
@@ -43,6 +44,7 @@ when defined(windows):
 else:
   import posix
 
+const HighestSuggestProtocolVersion = 4
 const DummyEof = "!EOF!"
 const Usage = """
 Nimsuggest - Tool to give every editor IDE like capabilities for Nim
@@ -55,12 +57,17 @@ Options:
   --address:HOST          binds to that address, by default ""
   --stdin                 read commands from stdin and write results to
                           stdout instead of using sockets
+  --clientProcessId:PID   shutdown nimsuggest in case this process dies
   --epc                   use emacs epc mode
   --debug                 enable debug output
   --log                   enable verbose logging to nimsuggest.log file
   --v1                    use version 1 of the protocol; for backwards compatibility
   --v2                    use version 2(default) of the protocol
   --v3                    use version 3 of the protocol
+  --v4                    use version 4 of the protocol
+  --info:X                information
+    --info:nimVer           return the Nim compiler version that nimsuggest uses internally
+    --info:protocolVer      return the newest protocol version that is supported
   --refresh               perform automatic refreshes to keep the analysis precise
   --maxresults:N          limit the number of suggestions to N
   --tester                implies --stdin and outputs a line
@@ -215,7 +222,7 @@ proc executeNoHooks(cmd: IdeCmd, file, dirtyfile: AbsoluteFile, line, col: int, 
              graph: ModuleGraph) =
   let conf = graph.config
 
-  if conf.suggestVersion == 3:
+  if conf.suggestVersion >= 3:
     let command = fmt "cmd = {cmd} {file}:{line}:{col}"
     benchmark command:
       executeNoHooksV3(cmd, file, dirtyfile, line, col, tag, graph)
@@ -506,7 +513,11 @@ proc execCmd(cmd: string; graph: ModuleGraph; cachedMsgs: CachedMsgs) =
   of "chkfile": conf.ideCmd = ideChkFile
   of "recompile": conf.ideCmd = ideRecompile
   of "type": conf.ideCmd = ideType
-  of "inlayhints": conf.ideCmd = ideInlayHints
+  of "inlayhints":
+    if conf.suggestVersion >= 4:
+      conf.ideCmd = ideInlayHints
+    else:
+      err()
   else: err()
   var dirtyfile = ""
   var orig = ""
@@ -571,7 +582,7 @@ proc mainThread(graph: ModuleGraph) =
     else:
       os.sleep 250
       idle += 1
-    if idle == 20 and gRefresh and conf.suggestVersion != 3:
+    if idle == 20 and gRefresh and conf.suggestVersion < 3:
       # we use some nimsuggest activity to enable a lazy recompile:
       conf.ideCmd = ideChk
       conf.writelnHook = proc (s: string) = discard
@@ -602,7 +613,7 @@ proc mainCommand(graph: ModuleGraph) =
   # do not print errors, but log them
   conf.writelnHook = proc (msg: string) = discard
 
-  if graph.config.suggestVersion == 3:
+  if graph.config.suggestVersion >= 3:
     graph.config.structuredErrorHook = proc (conf: ConfigRef; info: TLineInfo; msg: string; sev: Severity) =
       let suggest = Suggest(section: ideChk, filePath: toFullPath(conf, info),
         line: toLinenumber(info), column: toColumn(info), doc: msg, forth: $sev)
@@ -615,6 +626,9 @@ proc mainCommand(graph: ModuleGraph) =
 
   open(requests)
   open(results)
+
+  if graph.config.clientProcessId != 0:
+    hookProcMonitor(graph.config.clientProcessId)
 
   case gMode
   of mstdin: createThread(inputThread, replStdin, (gPort, gAddress))
@@ -666,6 +680,17 @@ proc processCmdLine*(pass: TCmdLinePass, cmd: string; conf: ConfigRef) =
       of "v1": conf.suggestVersion = 1
       of "v2": conf.suggestVersion = 0
       of "v3": conf.suggestVersion = 3
+      of "v4": conf.suggestVersion = 4
+      of "info":
+        case p.val.normalize
+        of "protocolver":
+          stdout.writeLine(HighestSuggestProtocolVersion)
+          quit 0
+        of "nimver":
+          stdout.writeLine(system.NimVersion)
+          quit 0
+        else:
+          processSwitch(pass, p, conf)
       of "tester":
         gMode = mstdin
         gEmitEof = true
@@ -680,6 +705,8 @@ proc processCmdLine*(pass: TCmdLinePass, cmd: string; conf: ConfigRef) =
         conf.suggestMaxResults = parseInt(p.val)
       of "find":
         findProject = true
+      of "clientprocessid":
+        conf.clientProcessId = parseInt(p.val)
       else: processSwitch(pass, p, conf)
     of cmdArgument:
       let a = unixToNativePath(p.key)
@@ -1115,7 +1142,7 @@ proc executeNoHooksV3(cmd: IdeCmd, file: AbsoluteFile, dirtyfile: AbsoluteFile, 
     i += parseInt(tag, endCol, i)
     let s = graph.findSymDataInRange(file, line, col, endLine, endCol)
     for q in s:
-      if q.sym.kind in {skLet, skVar, skForVar} and q.isDecl and not q.sym.hasUserSpecifiedType:
+      if q.sym.kind in {skLet, skVar, skForVar, skConst} and q.isDecl and not q.sym.hasUserSpecifiedType:
         graph.suggestInlayHintResult(q.sym, q.info, ideInlayHints)
   else:
     myLog fmt "Discarding {cmd}"

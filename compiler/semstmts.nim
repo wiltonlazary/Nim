@@ -603,7 +603,7 @@ const
 
 proc makeVarTupleSection(c: PContext, n, a, def: PNode, typ: PType, symkind: TSymKind, origResult: var PNode): PNode =
   ## expand tuple unpacking assignments into new var/let/const section
-  ## 
+  ##
   ## mirrored with semexprs.makeTupleAssignments
   if typ.kind != tyTuple:
     localError(c.config, a.info, errTupleUnpackingTupleExpected %
@@ -823,9 +823,11 @@ proc semConst(c: PContext, n: PNode): PNode =
       addToVarSection(c, result, b)
       continue
 
+    var hasUserSpecifiedType = false
     var typ: PType = nil
     if a[^2].kind != nkEmpty:
       typ = semTypeNode(c, a[^2], nil)
+      hasUserSpecifiedType = true
 
     var typFlags: TTypeAllowedFlags = {}
 
@@ -866,6 +868,8 @@ proc semConst(c: PContext, n: PNode): PNode =
     else:
       for j in 0..<a.len-2:
         var v = semIdentDef(c, a[j], skConst)
+        when defined(nimsuggest):
+          v.hasUserSpecifiedType = hasUserSpecifiedType
         if sfGenSym notin v.flags: addInterfaceDecl(c, v)
         elif v.owner == nil: v.owner = getCurrOwner(c)
         styleCheckDef(c, v)
@@ -1495,7 +1499,7 @@ proc typeSectionRightSidePass(c: PContext, n: PNode) =
         localError(c.config, name.info, "{.exportc.} not allowed for type aliases")
       elif s.typ.kind == tyGenericBody:
         localError(c.config, name.info, "{.exportc.} not allowed for generic types")
-    
+
     if tfBorrowDot in s.typ.flags:
       let body = s.typ.skipTypes({tyGenericBody})
       if body.kind != tyDistinct:
@@ -2072,7 +2076,7 @@ proc finishMethod(c: PContext, s: PSym) =
   if hasObjParam(s):
     methodDef(c.graph, c.idgen, s)
 
-proc semCppMember(c: PContext; s: PSym; n: PNode) = 
+proc semCppMember(c: PContext; s: PSym; n: PNode) =
   if sfImportc notin s.flags:
     let isVirtual = sfVirtual in s.flags
     let isCtor = sfConstructor in s.flags
@@ -2103,7 +2107,7 @@ proc semCppMember(c: PContext; s: PSym; n: PNode) =
           pragmaName & " procs must be defined in the same scope as the type they are virtual for and it must be a top level scope")
     else:
       localError(c.config, n.info, pragmaName & " procs are only supported in C++")
-  else: 
+  else:
     var typ = s.typ[0]
     if typ != nil and typ.kind == tyObject and typ.itemId notin c.graph.initializersPerType:
       var initializerCall = newTree(nkCall, newSymNode(s))
@@ -2340,7 +2344,7 @@ proc semProcAux(c: PContext, n: PNode, kind: TSymKind,
 
   if sfCppMember * s.flags != {}:
     semCppMember(c, s, n)
-          
+
   if n[bodyPos].kind != nkEmpty and sfError notin s.flags:
     # for DLL generation we allow sfImportc to have a body, for use in VM
     if c.config.ideCmd in {ideSug, ideCon} and s.kind notin {skMacro, skTemplate} and not
