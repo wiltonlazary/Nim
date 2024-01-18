@@ -376,7 +376,7 @@ else:
     discard
 
   when defined(nimAllowNonVarDestructor) and arcLikeMem:
-    proc `=destroy`*(x: string) {.inline, magic: "Destroy".} =
+    proc `=destroy`*(x: string) {.inline, magic: "Destroy", enforceNoRaises.} =
       discard
 
     proc `=destroy`*[T](x: seq[T]) {.inline, magic: "Destroy".} =
@@ -1606,6 +1606,11 @@ when not defined(js) and defined(nimV2):
       traceImpl: pointer
       typeInfoV1: pointer # for backwards compat, usually nil
       flags: int
+      when defined(gcDestructors):
+        when defined(cpp):
+          vTable: ptr UncheckedArray[pointer] # vtable for types
+        else:
+          vTable: UncheckedArray[pointer] # vtable for types
     PNimTypeV2 = ptr TNimTypeV2
 
 proc supportsCopyMem(t: typedesc): bool {.magic: "TypeTrait".}
@@ -1656,7 +1661,10 @@ when not defined(js):
       assert len(x) == 3
       x[0] = 10
     when supportsCopyMem(T):
-      newSeqImpl(T, len)
+      when nimvm:
+        result = newSeq[T](len)
+      else:
+        newSeqImpl(T, len)
     else:
       {.error: "The type T cannot contain managed memory or have destructors".}
 
@@ -1863,14 +1871,14 @@ when defined(js) or defined(nimdoc):
       tmp.add(cstring("ab"))
       tmp.add(cstring("cd"))
       doAssert tmp == "abcd"
-    asm """
+    {.emit: """
       if (`x` === null) { `x` = []; }
       var off = `x`.length;
       `x`.length += `y`.length;
       for (var i = 0; i < `y`.length; ++i) {
         `x`[off+i] = `y`.charCodeAt(i);
       }
-    """
+    """.}
   proc add*(x: var cstring, y: cstring) {.magic: "AppendStrStr".} =
     ## Appends `y` to `x` in place.
     ## Only implemented for JS backend.
@@ -2512,6 +2520,8 @@ when hasAlloc or defined(nimscript):
     ##   var a = "abc"
     ##   a.insert("zz", 0) # a <- "zzabc"
     ##   ```
+    if item.len == 0: # prevents self-assignment
+      return
     var xl = x.len
     setLen(x, xl+item.len)
     var j = xl-1
