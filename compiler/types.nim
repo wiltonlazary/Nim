@@ -809,12 +809,12 @@ proc firstOrd*(conf: ConfigRef; t: PType): Int128 =
     if t.hasElementType: result = firstOrd(conf, skipModifier(t))
     else:
       result = Zero
-      internalError(conf, "invalid kind for firstOrd(" & $t.kind & ')')
+      fatal(conf, unknownLineInfo, "invalid kind for firstOrd(" & $t.kind & ')')
   of tyUncheckedArray, tyCstring:
     result = Zero
   else:
     result = Zero
-    internalError(conf, "invalid kind for firstOrd(" & $t.kind & ')')
+    fatal(conf, unknownLineInfo, "invalid kind for firstOrd(" & $t.kind & ')')
 
 proc firstFloat*(t: PType): BiggestFloat =
   case t.kind
@@ -905,12 +905,12 @@ proc lastOrd*(conf: ConfigRef; t: PType): Int128 =
     if t.hasElementType: result = lastOrd(conf, skipModifier(t))
     else:
       result = Zero
-      internalError(conf, "invalid kind for lastOrd(" & $t.kind & ')')
+      fatal(conf, unknownLineInfo, "invalid kind for lastOrd(" & $t.kind & ')')
   of tyUncheckedArray:
     result = Zero
   else:
     result = Zero
-    internalError(conf, "invalid kind for lastOrd(" & $t.kind & ')')
+    fatal(conf, unknownLineInfo, "invalid kind for lastOrd(" & $t.kind & ')')
 
 proc lastFloat*(t: PType): BiggestFloat =
   case t.kind
@@ -1234,7 +1234,7 @@ proc sameTypeAux(x, y: PType, c: var TSameTypeClosure): bool =
     let
       lhs = x.skipGenericAlias
       rhs = y.skipGenericAlias
-    if rhs.kind != tyGenericInst or lhs.base != rhs.base:
+    if rhs.kind != tyGenericInst or lhs.base != rhs.base or rhs.kidsLen != lhs.kidsLen:
       return false
     for ff, aa in underspecifiedPairs(rhs, lhs, 1, -1):
       if not sameTypeAux(ff, aa, c): return false

@@ -72,6 +72,10 @@ proc getCurrentExceptionMsg*(): string =
 proc setCurrentException*(exc: ref Exception) =
   lastJSError = cast[PJSError](exc)
 
+proc closureIterSetupExc(e: ref Exception) {.compilerproc, inline.} =
+  ## Used to set up exception handling for closure iterators
+  setCurrentException(e)
+
 proc auxWriteStackTrace(f: PCallFrame): string =
   type
     TempFrame = tuple[procname: cstring, line: int, filename: cstring]
@@ -508,7 +512,7 @@ proc absInt64(a: int64): int64 {.compilerproc.} =
 proc nimMin(a, b: int): int {.compilerproc.} = return if a <= b: a else: b
 proc nimMax(a, b: int): int {.compilerproc.} = return if a >= b: a else: b
 
-proc chckNilDisp(p: pointer) {.compilerproc.} =
+proc chckNilDisp(p: JSRef) {.compilerproc.} =
   if p == nil:
     sysFatal(NilAccessDefect, "cannot dispatch; dispatcher is nil")
 
@@ -781,3 +785,15 @@ if (!Math.trunc) {
   };
 }
 """.}
+
+proc cmpClosures(a, b: JSRef): bool {.compilerproc, asmNoStackFrame.} =
+  # Both `a` and `b` need to be a closure
+  {.emit: """
+    if (`a` !== null && `a`.ClP_0 !== undefined &&
+        `b` !== null && `b`.ClP_0 !== undefined) {
+      return `a`.ClP_0 == `b`.ClP_0 && `a`.ClE_0 == `b`.ClE_0;
+    } else {
+      return `a` == `b`;
+    }
+  """
+  .}
