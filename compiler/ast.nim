@@ -41,7 +41,7 @@ type
   TNodeKinds* = set[TNodeKind]
 
 type
-  TSymFlag* = enum    # 51 flags!
+  TSymFlag* = enum    # 52 flags!
     sfUsed,           # read access of sym (for warnings) or simply used
     sfExported,       # symbol is exported from module
     sfFromGeneric,    # symbol is instantiation of a generic; this is needed
@@ -126,6 +126,7 @@ type
     sfByCopy          # param is marked as pass bycopy
     sfMember          # proc is a C++ member of a type
     sfCodegenDecl     # type, proc, global or proc param is marked as codegenDecl
+    sfWasGenSym       # symbol was 'gensym'ed
 
   TSymFlags* = set[TSymFlag]
 
@@ -504,7 +505,7 @@ type
     mSwap, mIsNil, mArrToSeq, mOpenArrayToSeq,
     mNewString, mNewStringOfCap, mParseBiggestFloat,
     mMove, mEnsureMove, mWasMoved, mDup, mDestroy, mTrace,
-    mDefault, mUnown, mFinished, mIsolate, mAccessEnv, mAccessTypeField, mReset,
+    mDefault, mUnown, mFinished, mIsolate, mAccessEnv, mAccessTypeField,
     mArray, mOpenArray, mRange, mSet, mSeq, mVarargs,
     mRef, mPtr, mVar, mDistinct, mVoid, mTuple,
     mOrdinal, mIterableType,
