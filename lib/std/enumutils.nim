@@ -47,7 +47,7 @@ macro genEnumCaseStmt*(typ: typedesc, argSym: typed, default: typed,
     of nnkEnumFieldDef:
       fVal = f[0].strVal
       case f[1].kind
-      of nnkStrLit:
+      of nnkStrLit .. nnkTripleStrLit:
         fStr = f[1].strVal
       of nnkTupleConstr:
         fStr = f[1][1].strVal
@@ -57,7 +57,7 @@ macro genEnumCaseStmt*(typ: typedesc, argSym: typed, default: typed,
         fNum = f[1].intVal
       else:
         let fAst = f[0].getImpl
-        if fAst.kind == nnkStrLit:
+        if fAst.kind in {nnkStrLit .. nnkTripleStrLit}:
           fStr = fAst.strVal
         else:
           error("Invalid tuple syntax!", f[1])
@@ -174,6 +174,9 @@ template symbolRank*[T: enum](a: T): int =
   when T is Ordinal: ord(a) - T.low.ord.static
   else: symbolRankImpl(a)
 
+proc rangeBase(T: typedesc): typedesc {.magic: "TypeTrait".}
+  # skip one level of range; return the base type of a range type
+
 func symbolName*[T: enum](a: T): string =
   ## Returns the symbol name of an enum.
   ##
@@ -192,5 +195,8 @@ func symbolName*[T: enum](a: T): string =
       c1 = 4
       c2 = 20
     assert c1.symbolName == "c1"
-  const names = enumNames(T)
+  when T is range:
+    const names = enumNames(rangeBase T)
+  else:
+    const names = enumNames(T)
   names[a.symbolRank]

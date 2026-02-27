@@ -9,8 +9,6 @@
 
 # Implementation of some runtime checks.
 include system/indexerrors
-when defined(nimPreviewSlimSystem):
-  import std/formatfloat
 
 proc raiseRangeError(val: BiggestInt) {.compilerproc, noinline.} =
   when hostOS == "standalone":
@@ -53,12 +51,6 @@ proc raiseRangeErrorI(i, a, b: BiggestInt) {.compilerproc, noinline.} =
   else:
     sysFatal(RangeDefect, "value out of range: " & $i & " notin " & $a & " .. " & $b)
 
-proc raiseRangeErrorF(i, a, b: float) {.compilerproc, noinline.} =
-  when defined(standalone):
-    sysFatal(RangeDefect, "value out of range")
-  else:
-    sysFatal(RangeDefect, "value out of range: " & $i & " notin " & $a & " .. " & $b)
-
 proc raiseRangeErrorU(i, a, b: uint64) {.compilerproc, noinline.} =
   # todo: better error reporting
   sysFatal(RangeDefect, "value out of range")
@@ -73,34 +65,29 @@ proc chckIndx(i, a, b: int): int =
   if i >= a and i <= b:
     return i
   else:
+    result = 0
     raiseIndexError3(i, a, b)
 
 proc chckRange(i, a, b: int): int =
   if i >= a and i <= b:
     return i
   else:
+    result = 0
     raiseRangeError(i)
 
 proc chckRange64(i, a, b: int64): int64 {.compilerproc.} =
   if i >= a and i <= b:
     return i
   else:
+    result = 0
     raiseRangeError(i)
 
 proc chckRangeU(i, a, b: uint64): uint64 {.compilerproc.} =
   if i >= a and i <= b:
     return i
   else:
+    result = 0
     sysFatal(RangeDefect, "value out of range")
-
-proc chckRangeF(x, a, b: float): float =
-  if x >= a and x <= b:
-    return x
-  else:
-    when hostOS == "standalone":
-      sysFatal(RangeDefect, "value out of range")
-    else:
-      sysFatal(RangeDefect, "value out of range: ", $x)
 
 proc chckNil(p: pointer) =
   if p == nil:
@@ -159,3 +146,30 @@ when not defined(nimV2):
 when defined(nimV2):
   proc raiseObjectCaseTransition() {.compilerproc.} =
     sysFatal(FieldDefect, "assignment to discriminant changes object branch")
+
+import std/formatfloat
+
+when not defined(nimPreviewSlimSystem):
+  export addFloat
+
+func f2s(x: float | float32): string =
+  ## Outplace version of `addFloat`.
+  result = ""
+  result.addFloat(x)
+
+
+proc raiseRangeErrorF(i, a, b: float) {.compilerproc, noinline.} =
+  when defined(standalone):
+    sysFatal(RangeDefect, "value out of range")
+  else:
+    sysFatal(RangeDefect, "value out of range: " & f2s(i) & " notin " & f2s(a) & " .. " & f2s(b))
+
+proc chckRangeF(x, a, b: float): float =
+  if x >= a and x <= b:
+    return x
+  else:
+    result = 0.0
+    when hostOS == "standalone":
+      sysFatal(RangeDefect, "value out of range")
+    else:
+      sysFatal(RangeDefect, "value out of range: ", f2s(x))

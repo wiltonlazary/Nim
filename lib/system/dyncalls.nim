@@ -12,7 +12,7 @@
 # However, the interface has been designed to take platform differences into
 # account and been ported to all major platforms.
 
-{.push stack_trace: off.}
+{.push stack_trace: off, checks: off.}
 
 const
   NilLibHandle: LibHandle = nil
@@ -59,7 +59,7 @@ proc procAddrError(name: cstring) {.compilerproc, nonReloadable, hcrInline.} =
 # this code was inspired from Lua's source code:
 # Lua - An Extensible Extension Language
 # Tecgraf: Computer Graphics Technology Group, PUC-Rio, Brazil
-# http://www.lua.org
+# https://www.lua.org
 # mailto:info@lua.org
 
 when defined(posix):

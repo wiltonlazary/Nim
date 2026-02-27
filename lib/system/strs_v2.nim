@@ -9,19 +9,7 @@
 
 ## Default new string implementation used by Nim's core.
 
-type
-  NimStrPayloadBase = object
-    cap: int
-
-  NimStrPayload {.core.} = object
-    cap: int
-    data: UncheckedArray[char]
-
-  NimStringV2 {.core.} = object
-    len: int
-    p: ptr NimStrPayload ## can be nil if len == 0.
-
-const nimStrVersion {.core.} = 2
+{.push overflowChecks: off, rangeChecks: off.}
 
 template isLiteral(s): bool = (s.p == nil) or (s.p.cap and strlitFlag) == strlitFlag
 
@@ -61,7 +49,7 @@ template reallocPayload0(p: pointer; oldLen, newLen: int): ptr NimStrPayload =
 proc resize(old: int): int {.inline.} =
   if old <= 0: result = 4
   elif old <= high(int16): result = old * 2
-  else: result = old * 3 div 2 # for large arrays * 3/2 is better
+  else: result = old div 2 + old # for large arrays * 3/2 is better
 
 proc prepareAdd(s: var NimStringV2; addLen: int) {.compilerRtl.} =
   let newLen = s.len + addLen
@@ -112,9 +100,10 @@ proc nimToCStringConv(s: NimStringV2): cstring {.compilerproc, nonReloadable, in
 
 proc appendString(dest: var NimStringV2; src: NimStringV2) {.compilerproc, inline.} =
   if src.len > 0:
-    # also copy the \0 terminator:
-    copyMem(unsafeAddr dest.p.data[dest.len], unsafeAddr src.p.data[0], src.len+1)
+    # don't copy the \0 terminator:
+    copyMem(unsafeAddr dest.p.data[dest.len], unsafeAddr src.p.data[0], src.len)
     inc dest.len, src.len
+    dest.p.data[dest.len] = '\0'
 
 proc appendChar(dest: var NimStringV2; c: char) {.compilerproc, inline.} =
   dest.p.data[dest.len] = c
@@ -140,6 +129,10 @@ proc mnewString(len: int): NimStringV2 {.compilerproc.} =
     result = NimStringV2(len: len, p: p)
 
 proc setLengthStrV2(s: var NimStringV2, newLen: int) {.compilerRtl.} =
+  ## Sets the `s` length to `newLen` zeroing memory on growth.
+  ## Terminating zero at `s[newLen]` for cstring compatibility is set
+  ## on length change, **excluding** `newLen == 0`.
+  ## Negative `newLen` is **not** bound to zero.
   if newLen == 0:
     discard "do not free the buffer here, pattern 's.setLen 0' is common for avoiding allocations"
   else:
@@ -166,7 +159,7 @@ proc setLengthStrV2(s: var NimStringV2, newLen: int) {.compilerRtl.} =
   s.len = newLen
 
 proc nimAsgnStrV2(a: var NimStringV2, b: NimStringV2) {.compilerRtl.} =
-  if a.p == b.p: return
+  if a.p == b.p and a.len == b.len: return
   if isLiteral(b):
     # we can shallow copy literals:
     frees(a)
@@ -222,3 +215,5 @@ func capacity*(self: string): int {.inline.} =
 
   let str = cast[ptr NimStringV2](unsafeAddr self)
   result = if str.p != nil: str.p.cap and not strlitFlag else: 0
+
+{.pop.}

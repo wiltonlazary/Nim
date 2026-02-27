@@ -68,7 +68,7 @@ type
 
 proc `=copy`*(x: var Task, y: Task) {.error.}
 
-const arcLike = defined(gcArc) or defined(gcAtomicArc) or defined(gcOrc)
+const arcLike = defined(gcArc) or defined(gcAtomicArc) or defined(gcOrc) or defined(gcYrc)
 when defined(nimAllowNonVarDestructor) and arcLike:
   proc `=destroy`*(t: Task) {.inline, gcsafe.} =
     ## Frees the resources allocated for a `Task`.
@@ -190,7 +190,7 @@ macro toTask*(e: typed{nkCall | nkInfix | nkPrefix | nkPostfix | nkCommand | nkC
         # passing by static parameters
         # so we pass them directly instead of passing by scratchObj
         callNode.add nnkExprEqExpr.newTree(formalParams[i][0], e[i])
-      of nnkSym, nnkPtrTy, nnkProcTy, nnkTupleConstr:
+      of nnkSym, nnkPtrTy, nnkProcTy, nnkTupleTy, nnkTupleConstr:
         addAllNode(param, e[i])
       of nnkCharLit..nnkNilLit:
         callNode.add nnkExprEqExpr.newTree(formalParams[i][0], e[i])

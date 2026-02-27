@@ -51,7 +51,7 @@ proc nimCharToStr(x: char): string {.compilerproc.} =
 proc isNimException(): bool {.asmNoStackFrame.} =
   {.emit: "return `lastJSError` && `lastJSError`.m_type;".}
 
-proc getCurrentException*(): ref Exception {.compilerRtl, benign.} =
+proc getCurrentException*(): ref Exception {.compilerRtl, gcsafe.} =
   if isNimException(): result = cast[ref Exception](lastJSError)
 
 proc getCurrentExceptionMsg*(): string =
@@ -72,8 +72,13 @@ proc getCurrentExceptionMsg*(): string =
 proc setCurrentException*(exc: ref Exception) =
   lastJSError = cast[PJSError](exc)
 
-proc closureIterSetupExc(e: ref Exception) {.compilerproc, inline.} =
-  ## Used to set up exception handling for closure iterators
+proc closureIterSetExc(e: ref Exception) {.compilerRtl, gcsafe.} =
+  setCurrentException(e)
+
+proc pushCurrentException(e: sink(ref Exception)) {.compilerRtl, inline.} =
+  ## Used to set up exception handling for closure iterators.
+
+  # XXX Shouldn't there be exception stack like in excpt.nim?
   setCurrentException(e)
 
 proc auxWriteStackTrace(f: PCallFrame): string =
@@ -153,6 +158,16 @@ proc raiseException(e: ref Exception, ename: cstring) {.
   when NimStackTrace:
     e.trace = rawWriteStackTrace()
   {.emit: "throw `e`;".}
+
+proc raiseDefect() {.compilerproc, asmNoStackFrame.} =
+  if isNimException():
+    let e = getCurrentException()
+    if e of Defect:
+      if excHandler == 0:
+        unhandledException(e)
+      when NimStackTrace:
+        e.trace = rawWriteStackTrace()
+      {.emit: "throw `e`;".}
 
 proc reraiseException() {.compilerproc, asmNoStackFrame.} =
   if lastJSError == nil:
@@ -333,6 +348,18 @@ proc SetMinus(a, b: int): int {.compilerproc, asmNoStackFrame.} =
     var result = {};
     for (var elem in `a`) {
       if (!`b`[elem]) { result[elem] = true; }
+    }
+    return result;
+  """.}
+
+proc SetXor(a, b: int): int {.compilerproc, asmNoStackFrame.} =
+  {.emit: """
+    var result = {};
+    for (var elem in `a`) {
+      if (!`b`[elem]) { result[elem] = true; }
+    }
+    for (var elem in `b`) {
+      if (!`a`[elem]) { result[elem] = true; }
     }
     return result;
   """.}
@@ -659,6 +686,14 @@ proc isObj(obj, subclass: PNimType): bool {.compilerproc.} =
 
 proc addChar(x: string, c: char) {.compilerproc, asmNoStackFrame.} =
   {.emit: "`x`.push(`c`);".}
+
+proc nimAddStrStr(x, y: string) {.compilerproc, asmNoStackFrame.} =
+  {.emit: """
+  var L = `y`.length;
+  for (var i = 0; i < L; ++i) {
+    `x`.push(`y`[i]);
+  }
+  """.}
 
 {.pop.}
 

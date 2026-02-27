@@ -121,7 +121,7 @@ template main {.dirty.} =
       rVal: R = default(R) # Works fine
       objVal = default(Obj)
 
-    doAssert rVal == 0 # it should be 1
+    doAssert rVal == 1
     doAssert objVal.r == 1
 
   block: # bug #16744
@@ -134,7 +134,7 @@ template main {.dirty.} =
       rVal: R = default(R) # Works fine
       objVal = Obj()
 
-    doAssert rVal == 0 # it should be 1
+    doAssert rVal == 1 # it should be 1
     doAssert objVal.r == 1
 
   block: # bug #3608
@@ -239,7 +239,7 @@ template main {.dirty.} =
     # todo
     discard "fixme"
   else:
-    when defined(gcArc) or defined(gcOrc):
+    when defined(gcArc) or defined(gcOrc) or defined(gcYrc):
       block: #seq
         var x = newSeq[Object](10)
         let y = x[0]
@@ -375,7 +375,7 @@ template main {.dirty.} =
     type
       Color = enum
         Red, Blue, Yellow
-  
+
     type
       ObjectVarint3 = object
         case kind: Color = Blue
@@ -663,7 +663,7 @@ template main {.dirty.} =
 
       when not(T is void):
         v.vResultPrivate
-        
+
     type R = Result[int, string]
 
     proc testAssignResult() =
@@ -673,11 +673,11 @@ template main {.dirty.} =
         result = v
 
       proc failed(): Result[int, string] =
-        discard
+        result = default(Result[int, string])
 
       proc calling(): Result[int, string] =
         let _ = ? failed()
-        doAssert false
+        raiseAssert "false"
 
       let r = calling()
       doAssert assigned
@@ -744,6 +744,93 @@ template main {.dirty.} =
       var b = default ArrayObj2
       doAssert b.list[North] == 1
 
+  block:
+    type limited_float = range[1.2..20.0]
+    doAssert default(limited_float) == 1.2
+
+
+  block:
+    type
+      range1 = range[1..10]
+      range2 = range[-1..10]
+
+    proc foo =
+      doAssert default(range1) == 1
+      doAssert default(range2) == -1
+
+      let s = default(array[5, range1])
+      doAssert s == [range1 1, 1, 1, 1, 1]
+
+    foo()
+
+  block:
+    type
+      Object = object
+        id: range[1.2..29.3]
+
+    var s = default(Object)
+    doAssert s.id == 1.2
+
+  block: # bug #23943
+    type limited_int = range[1..20]
+    var d: limited_int;
+    doAssert d == 1
+
+  block: # bug #23545
+    proc evaluate(params: int) =
+        discard
+
+    proc evaluate() =
+        discard
+
+    type SearchInfo = object
+      evaluation: proc() = evaluate
+
+    var a = SearchInfo()
+    a.evaluation()
+
+  block: # bug #23770
+    type
+      Enum = enum A, B
+      Object = object
+        case a: Enum
+        of A:
+          integer: int = 200
+        of B:
+          time: string
+      Simple = object
+        v = -1
+      Another = object
+        o = Object(a: A)
+        v: Simple
+
+    let s1 = Object(a: A)
+    let s2 = Another()
+    doAssert s1.integer == 200 and s2.o.integer == 200
+
 
 static: main()
 main()
+
+block:
+  type
+    MyTyp = ref object
+      thing = initTable[string,string]()
+
+  var t = MyTyp()
+  t.thing[""] = ""
+
+
+type
+  Thing = object
+    a: int = 100 # this is fine
+    b = 100 # this is not
+
+proc overloaded[T: SomeSignedInt](x: T) = discard
+proc overloaded[T: SomeUnsignedInt](x: T) = discard
+proc overloaded[T: object](x: T) =
+  for val in fields(x):
+    var v: typeof(val)
+    overloaded(v)
+
+overloaded(Thing())

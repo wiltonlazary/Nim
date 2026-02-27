@@ -14,7 +14,9 @@ at offset 0 then. The ``ref`` object header is independent from the
 runtime type and only contains a reference count.
 ]#
 
-when defined(gcOrc):
+{.push raises: [], rangeChecks: off.}
+
+when defined(gcOrc) or defined(gcYrc):
   const
     rcIncrement = 0b10000 # so that lowest 4 bits are not touched
     rcMask = 0b1111
@@ -34,12 +36,12 @@ type
     rc: int # the object header is now a single RC field.
             # we could remove it in non-debug builds for the 'owned ref'
             # design but this seems unwise.
-    when defined(gcOrc):
+    when defined(gcOrc) or defined(gcYrc):
       rootIdx: int # thanks to this we can delete potential cycle roots
                    # in O(1) without doubly linked lists
     when defined(nimArcDebug) or defined(nimArcIds):
       refId: int
-    when defined(gcOrc) and orcLeakDetector:
+    when (defined(gcOrc) or defined(gcYrc)) and orcLeakDetector:
       filename: cstring
       line: int
 
@@ -72,7 +74,7 @@ elif defined(nimArcIds):
 
   const traceId = -1
 
-when defined(gcAtomicArc) and hasThreadSupport:
+when (defined(gcAtomicArc) or defined(gcYrc)) and hasThreadSupport:
   template decrement(cell: Cell): untyped =
     discard atomicDec(cell.rc, rcIncrement)
   template increment(cell: Cell): untyped =
@@ -81,15 +83,18 @@ when defined(gcAtomicArc) and hasThreadSupport:
     atomicLoadN(x.rc.addr, ATOMIC_ACQUIRE) shr rcShift
 else:
   template decrement(cell: Cell): untyped =
-    dec(cell.rc, rcIncrement)
+    cell.rc = cell.rc -% rcIncrement
   template increment(cell: Cell): untyped =
-    inc(cell.rc, rcIncrement)
+    cell.rc = cell.rc +% rcIncrement
   template count(x: Cell): untyped =
     x.rc shr rcShift
 
+when not defined(nimHasQuirky):
+  {.pragma: quirky.}
+
 proc nimNewObj(size, alignment: int): pointer {.compilerRtl.} =
   let hdrSize = align(sizeof(RefHeader), alignment)
-  let s = size + hdrSize
+  let s = size +% hdrSize
   when defined(nimscript):
     discard
   else:
@@ -114,7 +119,7 @@ proc nimNewObjUninit(size, alignment: int): pointer {.compilerRtl.} =
   else:
     result = cast[ptr RefHeader](alignedAlloc(s, alignment) +! hdrSize)
   head(result).rc = 0
-  when defined(gcOrc):
+  when defined(gcOrc) or defined(gcYrc):
     head(result).rootIdx = 0
   when defined(nimArcDebug):
     head(result).refId = gRefId
@@ -152,7 +157,7 @@ proc nimIncRef(p: pointer) {.compilerRtl, inl.} =
   when traceCollector:
     cprintf("[INCREF] %p\n", head(p))
 
-when not defined(gcOrc) or defined(nimThinout):
+when not (defined(gcOrc) or defined(gcYrc)) or defined(nimThinout):
   proc unsureAsgnRef(dest: ptr pointer, src: pointer) {.inline.} =
     # This is only used by the old RTTI mechanism and we know
     # that 'dest[]' is nil and needs no destruction. Which is really handy
@@ -190,7 +195,7 @@ proc nimRawDispose(p: pointer, alignment: int) {.compilerRtl.} =
 template `=dispose`*[T](x: owned(ref T)) = nimRawDispose(cast[pointer](x), T.alignOf)
 #proc dispose*(x: pointer) = nimRawDispose(x)
 
-proc nimDestroyAndDispose(p: pointer) {.compilerRtl, raises: [].} =
+proc nimDestroyAndDispose(p: pointer) {.compilerRtl, quirky, raises: [].} =
   let rti = cast[ptr PNimTypeV2](p)
   if rti.destructor != nil:
     cast[DestructorProc](rti.destructor)(p)
@@ -203,7 +208,9 @@ proc nimDestroyAndDispose(p: pointer) {.compilerRtl, raises: [].} =
       cstderr.rawWrite "has destructor!\n"
   nimRawDispose(p, rti.align)
 
-when defined(gcOrc):
+when defined(gcYrc):
+  include yrc
+elif defined(gcOrc):
   when defined(nimThinout):
     include cyclebreaker
   else:
@@ -211,6 +218,7 @@ when defined(gcOrc):
     #include cyclecollector
 
 proc nimDecRefIsLast(p: pointer): bool {.compilerRtl, inl.} =
+  result = false
   if p != nil:
     var cell = head(p)
 
@@ -219,7 +227,7 @@ proc nimDecRefIsLast(p: pointer): bool {.compilerRtl, inl.} =
         writeStackTrace()
         cfprintf(cstderr, "[DecRef] %p %ld\n", p, cell.count)
 
-    when defined(gcAtomicArc) and hasThreadSupport:
+    when (defined(gcAtomicArc) or defined(gcYrc)) and hasThreadSupport:
       # `atomicDec` returns the new value
       if atomicDec(cell.rc, rcIncrement) == -rcIncrement:
         result = true
@@ -245,7 +253,7 @@ proc GC_ref*[T](x: ref T) =
   ## New runtime only supports this operation for 'ref T'.
   if x != nil: nimIncRef(cast[pointer](x))
 
-when not defined(gcOrc):
+when not (defined(gcOrc) or defined(gcYrc)):
   template GC_fullCollect* =
     ## Forces a full garbage collection pass. With `--mm:arc` a nop.
     discard
@@ -265,3 +273,5 @@ when defined(gcDestructors):
   proc nimGetVTable(p: pointer, index: int): pointer
         {.compilerRtl, inline, raises: [].} =
     result = cast[ptr PNimTypeV2](p).vTable[index]
+
+{.pop.} # raises: []

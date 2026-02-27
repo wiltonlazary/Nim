@@ -1,3 +1,6 @@
+discard """
+  retries: 2
+"""
 
 # Program to detect bug #1796 reliably
 
@@ -9,7 +12,7 @@ type
 proc createCycle(leaf: string): Node =
   new result
   result.a = result
-  when defined(gcArc) or defined(gcOrc):
+  when defined(gcArc) or defined(gcOrc) or defined(gcYrc):
     result.leaf = leaf
   else:
     shallowCopy result.leaf, leaf

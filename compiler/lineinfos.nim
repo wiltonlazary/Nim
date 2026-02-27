@@ -92,10 +92,14 @@ type
     warnStmtListLambda = "StmtListLambda",
     warnBareExcept = "BareExcept",
     warnImplicitDefaultValue = "ImplicitDefaultValue",
-    warnGenericsIgnoredInjection = "GenericsIgnoredInjection",
-    warnStdPrefix = "StdPrefix"
+    warnIgnoredSymbolInjection = "IgnoredSymbolInjection",
+    warnStdPrefix = "StdPrefix",
+    warnUnknownNotes = "UnknownNotes",
+    warnLongLiterals = "LongLiterals",
     warnUser = "User",
     warnGlobalVarConstructorTemporary = "GlobalVarConstructorTemporary",
+    warnImplicitRangeConversion = "ImplicitRangeConversion",
+    warnSystemRangeConversion = "SystemRangeConversion",
     # hints
     hintSuccess = "Success", hintSuccessX = "SuccessX",
     hintCC = "CC",
@@ -109,9 +113,9 @@ type
     hintSource = "Source", hintPerformance = "Performance", hintStackTrace = "StackTrace",
     hintGCStats = "GCStats", hintGlobalVar = "GlobalVar", hintExpandMacro = "ExpandMacro",
     hintUser = "User", hintUserRaw = "UserRaw", hintExtendedContext = "ExtendedContext",
+    hintUnknownRaises = "UnknownRaises",
     hintMsgOrigin = "MsgOrigin", # since 1.3.5
     hintDeclaredLoc = "DeclaredLoc", # since 1.5.1
-    hintUnknownHint = "UnknownHint"
 
 const
   MsgKindToStr*: array[TMsgKind, string] = [
@@ -198,10 +202,14 @@ const
     warnStmtListLambda: "statement list expression assumed to be anonymous proc; this is deprecated, use `do (): ...` or `proc () = ...` instead",
     warnBareExcept: "$1",
     warnImplicitDefaultValue: "$1",
-    warnGenericsIgnoredInjection: "$1",
+    warnIgnoredSymbolInjection: "$1",
     warnStdPrefix: "$1 needs the 'std' prefix",
+    warnUnknownNotes: "$1",
+    warnLongLiterals: "$1",
     warnUser: "$1",
     warnGlobalVarConstructorTemporary: "global variable '$1' initialization requires a temporary variable",
+    warnImplicitRangeConversion: "implicit range conversion $1",
+    warnSystemRangeConversion: "implicit range conversion $1",
     hintSuccess: "operation successful: $#",
     # keep in sync with `testament.isSuccess`
     hintSuccessX: "$build\n$loc lines; ${sec}s; $mem; proj: $project; out: $output",
@@ -235,9 +243,9 @@ const
     hintUser: "$1",
     hintUserRaw: "$1",
     hintExtendedContext: "$1",
+    hintUnknownRaises: "$1 is a forward declaration without explicit .raises, assuming it can raise anything",
     hintMsgOrigin: "$1",
-    hintDeclaredLoc: "$1",
-    hintUnknownHint: "unknown hint: $1"
+    hintDeclaredLoc: "$1"
   ]
 
 const
@@ -256,7 +264,7 @@ type
 
 proc computeNotesVerbosity(): array[0..3, TNoteKinds] =
   result = default(array[0..3, TNoteKinds])
-  result[3] = {low(TNoteKind)..high(TNoteKind)} - {warnObservableStores, warnResultUsed, warnAnyEnumConv, warnBareExcept, warnStdPrefix}
+  result[3] = {low(TNoteKind)..high(TNoteKind)} - {warnObservableStores, warnResultUsed, warnAnyEnumConv, warnBareExcept, warnStdPrefix, warnSystemRangeConversion}
   result[2] = result[3] - {hintStackTrace, hintExtendedContext, hintDeclaredLoc, hintProcessingStmt}
   result[1] = result[2] - {warnProveField, warnProveIndex,
     warnGcUnsafe, hintPath, hintDependency, hintCodeBegin, hintCodeEnd,
@@ -268,8 +276,13 @@ const
   NotesVerbosity* = computeNotesVerbosity()
   errXMustBeCompileTime* = "'$1' can only be used in compile-time context"
   errArgsNeedRunOption* = "arguments can only be given if the '--run' option is selected"
+  errFloatToString* = "cannot convert '$1' to '$2'"
 
 type
+  FileInfoKind* = enum
+    fikSource,      ## A real source file path
+    fikNifModule    ## A NIF module suffix (not a real path)
+
   TFileInfo* = object
     fullPath*: AbsoluteFile    # This is a canonical full filesystem path
     projPath*: RelativeFile    # This is relative to the project's root
@@ -288,6 +301,7 @@ type
                                # for 'nimsuggest'
     hash*: string              # the checksum of the file
     dirty*: bool               # for 'nimpretty' like tooling
+    kind*: FileInfoKind        # distinguishes real files from NIF suffixes
     when defined(nimpretty):
       fullContent*: string
   FileIndex* = distinct int32

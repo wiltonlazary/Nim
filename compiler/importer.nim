@@ -10,7 +10,7 @@
 ## This module implements the symbol importing mechanism.
 
 import
-  ast, astalgo, msgs, options, idents, lookups,
+  ast, msgs, options, idents, lookups,
   semdata, modulepaths, sigmatch, lineinfos,
   modulegraphs, wordrecg
 from std/strutils import `%`, startsWith
@@ -108,8 +108,8 @@ proc rawImportSymbol(c: PContext, s, origin: PSym; importSet: var IntSet) =
           else:
             importPureEnumField(c, e)
   else:
-    if s.kind == skConverter: addConverter(c, LazySym(sym: s))
-    if hasPattern(s): addPattern(c, LazySym(sym: s))
+    if s.kind == skConverter: addConverter(c, s)
+    if hasPattern(s): addPattern(c, s)
   if s.owner != origin:
     c.exportIndirections.incl((origin.id, s.id))
 
@@ -190,22 +190,19 @@ proc addImport(c: PContext; im: sink ImportedModule) =
 template addUnnamedIt(c: PContext, fromMod: PSym; filter: untyped) {.dirty.} =
   for it in mitems c.graph.ifaces[fromMod.position].converters:
     if filter:
-      loadPackedSym(c.graph, it)
-      if sfExported in it.sym.flags:
+      if sfExported in it.flags:
         addConverter(c, it)
   for it in mitems c.graph.ifaces[fromMod.position].patterns:
     if filter:
-      loadPackedSym(c.graph, it)
-      if sfExported in it.sym.flags:
+      if sfExported in it.flags:
         addPattern(c, it)
   for it in mitems c.graph.ifaces[fromMod.position].pureEnums:
     if filter:
-      loadPackedSym(c.graph, it)
-      importPureEnumFields(c, it.sym, it.sym.typ)
+      importPureEnumFields(c, it, it.typ)
 
 proc importAllSymbolsExcept(c: PContext, fromMod: PSym, exceptSet: IntSet) =
   c.addImport ImportedModule(m: fromMod, mode: importExcept, exceptSet: exceptSet)
-  addUnnamedIt(c, fromMod, it.sym.name.id notin exceptSet)
+  addUnnamedIt(c, fromMod, it.name.id notin exceptSet)
 
 proc importAllSymbols*(c: PContext, fromMod: PSym) =
   c.addImport ImportedModule(m: fromMod, mode: importAll)
@@ -231,7 +228,7 @@ proc importForwarded(c: PContext, n: PNode, exceptSet: IntSet; fromMod: PSym; im
     for i in 0..n.safeLen-1:
       importForwarded(c, n[i], exceptSet, fromMod, importSet)
 
-proc importModuleAs(c: PContext; n: PNode, realModule: PSym, importHidden: bool): PSym =
+proc importModuleAs(c: PContext; n: PNode, realModule: PSym, importHidden, trackUnusedImport: bool): PSym =
   result = realModule
   template createModuleAliasImpl(ident): untyped =
     createModuleAlias(realModule, c.idgen, ident, n.info, c.config.options)
@@ -245,8 +242,12 @@ proc importModuleAs(c: PContext; n: PNode, realModule: PSym, importHidden: bool)
     # avoids modifying `realModule`, see D20201209T194412 for `import {.all.}`
     result = createModuleAliasImpl(realModule.name)
   if importHidden:
-    result.options.incl optImportHidden
-  c.unusedImports.add((result, n.info))
+    ensureMutable result
+    result.optionsImpl.incl optImportHidden
+  let moduleIdent = if n.kind in {nkInfix, nkImportAs}: n[^1] else: n
+  result.info = moduleIdent.info
+  if trackUnusedImport:
+    c.unusedImports.add((result, result.info))
   c.importModuleMap[result.id] = realModule.id
   c.importModuleLookup.mgetOrPut(result.name.id, @[]).addUnique realModule.id
 
@@ -287,10 +288,10 @@ proc myImportModule(c: PContext, n: var PNode, importStmtResult: PNode): PSym =
                 toFullPath(c.config, c.graph.importStack[i+1])
       c.recursiveDep = err
 
-    var realModule: PSym
+    let trackUnusedImport = warnUnusedImportX in c.config.notes
     discard pushOptionEntry(c)
-    realModule = c.graph.importModuleCallback(c.graph, c.module, f)
-    result = importModuleAs(c, n, realModule, transf.importHidden)
+    let realModule = c.graph.importModuleCallback(c.graph, c.module, f)
+    result = importModuleAs(c, n, realModule, transf.importHidden, trackUnusedImport)
     popOptionEntry(c)
 
     #echo "set back to ", L
@@ -334,7 +335,7 @@ proc impMod(c: PContext; it: PNode; importStmtResult: PNode) =
   let m = myImportModule(c, it, importStmtResult)
   if m != nil:
     # ``addDecl`` needs to be done before ``importAllSymbols``!
-    addDecl(c, m, it.info) # add symbol to symbol table of module
+    addDecl(c, m) # add symbol to symbol table of module
     importAllSymbols(c, m)
     #importForwarded(c, m.ast, emptySet, m)
     afterImport(c, m)
@@ -371,7 +372,7 @@ proc evalFrom*(c: PContext, n: PNode): PNode =
   var m = myImportModule(c, n[0], result)
   if m != nil:
     n[0] = newSymNode(m)
-    addDecl(c, m, n.info)               # add symbol to symbol table of module
+    addDecl(c, m)               # add symbol to symbol table of module
 
     var im = ImportedModule(m: m, mode: importSet, imported: initIntSet())
     for i in 1..<n.len:
@@ -386,7 +387,7 @@ proc evalImportExcept*(c: PContext, n: PNode): PNode =
   var m = myImportModule(c, n[0], result)
   if m != nil:
     n[0] = newSymNode(m)
-    addDecl(c, m, n.info)               # add symbol to symbol table of module
+    addDecl(c, m)               # add symbol to symbol table of module
     importAllSymbolsExcept(c, m, readExceptSet(c, n))
     #importForwarded(c, m.ast, exceptSet, m)
     afterImport(c, m)

@@ -2,7 +2,7 @@ var
   nimThreadDestructionHandlers* {.rtlThreadVar.}: seq[proc () {.closure, gcsafe, raises: [].}]
 when not defined(boehmgc) and not hasSharedHeap and not defined(gogc) and not defined(gcRegions):
   proc deallocOsPages() {.rtl, raises: [].}
-proc threadTrouble() {.raises: [], gcsafe.}
+
 # create for the main thread. Note: do not insert this data into the list
 # of all threads; it's not to be stopped etc.
 when not defined(useNimRtl):
@@ -68,7 +68,7 @@ else:
         when defined(nimV2):
           thrd.dataFn(thrd.data)
         else:
-          var x: TArg
+          var x: TArg = default(TArg)
           deepCopy(x, thrd.data)
           thrd.dataFn(x)
     except:

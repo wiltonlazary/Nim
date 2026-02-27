@@ -37,7 +37,7 @@ proc spawnResult*(t: PType; inParallel: bool): TSpawnResult =
   else: srFlowVar
 
 proc flowVarKind(c: ConfigRef, t: PType): TFlowVarKind =
-  if c.selectedGC in {gcArc, gcOrc, gcAtomicArc}: fvBlob
+  if c.selectedGC in {gcArc, gcOrc, gcAtomicArc, gcYrc}: fvBlob
   elif t.skipTypes(abstractInst).kind in {tyRef, tyString, tySequence}: fvGC
   elif containsGarbageCollectedRef(t): fvInvalid
   else: fvBlob
@@ -58,7 +58,7 @@ proc addLocalVar(g: ModuleGraph; varSection, varInit: PNode; idgen: IdGenerator;
   result = newSym(skTemp, getIdent(g.cache, genPrefix), idgen, owner, varSection.info,
                   owner.options)
   result.typ = typ
-  incl(result.flags, sfFromGeneric)
+  incl(result.flagsImpl, sfFromGeneric)
 
   var vpart = newNodeI(nkIdentDefs, varSection.info, 3)
   vpart[0] = newSymNode(result)
@@ -66,7 +66,7 @@ proc addLocalVar(g: ModuleGraph; varSection, varInit: PNode; idgen: IdGenerator;
   vpart[2] = if varInit.isNil: v else: vpart[1]
   varSection.add vpart
   if varInit != nil:
-    if g.config.selectedGC in {gcArc, gcOrc, gcAtomicArc}:
+    if g.config.selectedGC in {gcArc, gcOrc, gcAtomicArc, gcYrc}:
       # inject destructors pass will do its own analysis
       varInit.add newFastMoveStmt(g, newSymNode(result), v)
     else:
@@ -358,7 +358,7 @@ proc wrapProcForSpawn*(g: ModuleGraph; idgen: IdGenerator; owner: PSym; spawnExp
     threadParam = newSym(skParam, getIdent(g.cache, "thread"), idgen, wrapperProc, n.info, g.config.options)
     argsParam = newSym(skParam, getIdent(g.cache, "args"), idgen, wrapperProc, n.info, g.config.options)
 
-  wrapperProc.flags.incl sfInjectDestructors
+  wrapperProc.incl sfInjectDestructors
   block:
     let ptrType = getSysType(g, n.info, tyPointer)
     threadParam.typ = ptrType
@@ -366,13 +366,13 @@ proc wrapProcForSpawn*(g: ModuleGraph; idgen: IdGenerator; owner: PSym; spawnExp
     argsParam.position = 1
 
   var objType = createObj(g, idgen, owner, n.info)
-  incl(objType.flags, tfFinal)
+  incl(objType, tfFinal)
   let castExpr = createCastExpr(argsParam, objType, idgen)
 
   var scratchObj = newSym(skVar, getIdent(g.cache, "scratch"), idgen, owner, n.info, g.config.options)
   block:
     scratchObj.typ = objType
-    incl(scratchObj.flags, sfFromGeneric)
+    incl(scratchObj.flagsImpl, sfFromGeneric)
     var varSectionB = newNodeI(nkVarSection, n.info)
     varSectionB.addVar(scratchObj.newSymNode)
     result.add varSectionB

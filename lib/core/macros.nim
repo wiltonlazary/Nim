@@ -93,6 +93,8 @@ type
     nnkFuncDef,
     nnkTupleConstr,
     nnkError,  ## erroneous AST node
+    nnkModuleRef, nnkReplayAction, nnkNilRodNode ## internal IC nodes
+    nnkOpenSym
 
   NimNodeKinds* = set[NimNodeKind]
   NimTypeKind* = enum  # some types are no longer used, see ast.nim
@@ -277,7 +279,7 @@ when (NimMajor, NimMinor, NimPatch) >= (1, 3, 5) or defined(nimSymImplTransform)
     ## note that code transformations are implementation dependent and subject to change.
     ## See an example in `tests/macros/tmacros_various.nim`.
 
-proc owner*(sym: NimNode): NimNode {.magic: "SymOwner", noSideEffect.}
+proc owner*(sym: NimNode): NimNode {.magic: "SymOwner", noSideEffect, deprecated.}
   ## Accepts a node of kind `nnkSym` and returns its owner's symbol.
   ## The meaning of 'owner' depends on `sym`'s `NimSymKind` and declaration
   ## context. For top level declarations this is an `nskModule` symbol,
@@ -363,7 +365,7 @@ proc symBodyHash*(s: NimNode): string {.noSideEffect.} =
   ## and owning module, but also implementation body. All procs/variables used in
   ## the implementation of this symbol are hashed recursively as well, including
   ## magics from system module.
-  discard
+  raiseAssert "implemented in the vmops"
 
 proc getTypeImpl*(n: typedesc): NimNode {.magic: "NGetType", noSideEffect.}
   ## Version of `getTypeImpl` which takes a `typedesc`.
@@ -431,15 +433,15 @@ when defined(nimHasNoReturnError):
 else:
   {.pragma: errorNoReturn.}
 
-proc error*(msg: string, n: NimNode = nil) {.magic: "NError", benign, errorNoReturn.}
+proc error*(msg: string, n: NimNode = nil) {.magic: "NError", gcsafe, errorNoReturn.}
   ## Writes an error message at compile time. The optional `n: NimNode`
   ## parameter is used as the source for file and line number information in
   ## the compilation error message.
 
-proc warning*(msg: string, n: NimNode = nil) {.magic: "NWarning", benign.}
+proc warning*(msg: string, n: NimNode = nil) {.magic: "NWarning", gcsafe.}
   ## Writes a warning message at compile time.
 
-proc hint*(msg: string, n: NimNode = nil) {.magic: "NHint", benign.}
+proc hint*(msg: string, n: NimNode = nil) {.magic: "NHint", gcsafe.}
   ## Writes a hint message at compile time.
 
 proc newStrLitNode*(s: string): NimNode {.noSideEffect.} =
@@ -509,7 +511,7 @@ proc genSym*(kind: NimSymKind = nskLet; ident = ""): NimNode {.
   ## Generates a fresh symbol that is guaranteed to be unique. The symbol
   ## needs to occur in a declaration context.
 
-proc callsite*(): NimNode {.magic: "NCallSite", benign, deprecated:
+proc callsite*(): NimNode {.magic: "NCallSite", gcsafe, deprecated:
   "Deprecated since v0.18.1; use `varargs[untyped]` in the macro prototype instead".}
   ## Returns the AST of the invocation expression that invoked this macro.
   # see https://github.com/nim-lang/RFCs/issues/387 as candidate replacement.
@@ -931,7 +933,7 @@ proc eqIdent*(a: NimNode; b: NimNode): bool {.magic: "EqIdent", noSideEffect.}
 
 const collapseSymChoice = not defined(nimLegacyMacrosCollapseSymChoice)
 
-proc treeTraverse(n: NimNode; res: var string; level = 0; isLisp = false, indented = false) {.benign.} =
+proc treeTraverse(n: NimNode; res: var string; level = 0; isLisp = false, indented = false) {.gcsafe.} =
   if level > 0:
     if indented:
       res.add("\n")
@@ -980,21 +982,21 @@ proc treeTraverse(n: NimNode; res: var string; level = 0; isLisp = false, indent
   if isLisp:
     res.add(")")
 
-proc treeRepr*(n: NimNode): string {.benign.} =
+proc treeRepr*(n: NimNode): string {.gcsafe.} =
   ## Convert the AST `n` to a human-readable tree-like string.
   ##
   ## See also `repr`, `lispRepr`_, and `astGenRepr`_.
   result = ""
   n.treeTraverse(result, isLisp = false, indented = true)
 
-proc lispRepr*(n: NimNode; indented = false): string {.benign.} =
+proc lispRepr*(n: NimNode; indented = false): string {.gcsafe.} =
   ## Convert the AST `n` to a human-readable lisp-like string.
   ##
   ## See also `repr`, `treeRepr`_, and `astGenRepr`_.
   result = ""
   n.treeTraverse(result, isLisp = true, indented = indented)
 
-proc astGenRepr*(n: NimNode): string {.benign.} =
+proc astGenRepr*(n: NimNode): string {.gcsafe.} =
   ## Convert the AST `n` to the code required to generate that AST.
   ##
   ## See also `repr`_, `treeRepr`_, and `lispRepr`_.
@@ -1003,7 +1005,7 @@ proc astGenRepr*(n: NimNode): string {.benign.} =
     NodeKinds = {nnkEmpty, nnkIdent, nnkSym, nnkNone, nnkCommentStmt}
     LitKinds = {nnkCharLit..nnkInt64Lit, nnkFloatLit..nnkFloat64Lit, nnkStrLit..nnkTripleStrLit}
 
-  proc traverse(res: var string, level: int, n: NimNode) {.benign.} =
+  proc traverse(res: var string, level: int, n: NimNode) {.gcsafe.} =
     for i in 0..level-1: res.add "  "
     if n.kind in NodeKinds:
       res.add("new" & ($n.kind).substr(3) & "Node(")
@@ -1325,7 +1327,7 @@ proc `name=`*(someProc: NimNode; val: NimNode) =
   else: someProc[0] = val
 
 proc params*(someProc: NimNode): NimNode =
-  if someProc.kind == nnkProcTy:
+  if someProc.kind in {nnkProcTy, nnkIteratorTy}:
     someProc[0]
   else:
     someProc.expectRoutine
@@ -1333,7 +1335,7 @@ proc params*(someProc: NimNode): NimNode =
 
 proc `params=`* (someProc: NimNode; params: NimNode) =
   expectKind(params, nnkFormalParams)
-  if someProc.kind == nnkProcTy:
+  if someProc.kind in {nnkProcTy, nnkIteratorTy}:
     someProc[0] = params
   else:
     someProc.expectRoutine
@@ -1342,7 +1344,7 @@ proc `params=`* (someProc: NimNode; params: NimNode) =
 proc pragma*(someProc: NimNode): NimNode =
   ## Get the pragma of a proc type.
   ## These will be expanded.
-  if someProc.kind == nnkProcTy:
+  if someProc.kind in {nnkProcTy, nnkIteratorTy}:
     result = someProc[1]
   else:
     someProc.expectRoutine
@@ -1350,7 +1352,7 @@ proc pragma*(someProc: NimNode): NimNode =
 proc `pragma=`*(someProc: NimNode; val: NimNode) =
   ## Set the pragma of a proc type.
   expectKind(val, {nnkEmpty, nnkPragma})
-  if someProc.kind == nnkProcTy:
+  if someProc.kind in {nnkProcTy, nnkIteratorTy}:
     someProc[1] = val
   else:
     someProc.expectRoutine
@@ -1407,7 +1409,7 @@ proc `$`*(node: NimNode): string =
     result = node.basename.strVal & "*"
   of nnkStrLit..nnkTripleStrLit, nnkCommentStmt, nnkSym, nnkIdent:
     result = node.strVal
-  of nnkOpenSymChoice, nnkClosedSymChoice:
+  of nnkOpenSymChoice, nnkClosedSymChoice, nnkOpenSym:
     result = $node[0]
   of nnkAccQuoted:
     result = ""
@@ -1438,7 +1440,7 @@ template findChild*(n: NimNode; cond: untyped): NimNode {.dirty.} =
   ##                          it.basename.ident == ident"foo")
   ##   ```
   block:
-    var res: NimNode
+    var res: NimNode = nil
     for it in n.children:
       if cond:
         res = it
@@ -1506,6 +1508,7 @@ proc expectIdent*(n: NimNode, name: string) {.since: (1,1).} =
 
 proc hasArgOfName*(params: NimNode; name: string): bool =
   ## Search `nnkFormalParams` for an argument.
+  result = false
   expectKind(params, nnkFormalParams)
   for i in 1..<params.len:
     for j in 0..<params[i].len-2:
@@ -1572,10 +1575,14 @@ proc extractTypeImpl(n: NimNode): NimNode =
     result = n[2]
   else: error("Invalid node to retrieve type implementation of: " & $n.kind)
 
+
+proc getTypeInstSkipAlias(n: NimNode): NimNode {.magic: "NGetType", noSideEffect.}
+
 proc customPragmaNode(n: NimNode): NimNode =
+  result = nil
   expectKind(n, {nnkSym, nnkDotExpr, nnkBracketExpr, nnkTypeOfExpr, nnkType, nnkCheckedFieldExpr})
-  let
-    typ = n.getTypeInst()
+
+  let typ = n.getTypeInstSkipAlias()
 
   if typ.kind == nnkBracketExpr and typ.len > 1 and typ[1].kind == nnkProcTy:
     return typ[1][1]
@@ -1728,7 +1735,7 @@ macro unpackVarargs*(callee: untyped; args: varargs[untyped]): untyped =
   for i in 0 ..< args.len:
     result.add args[i]
 
-proc getProjectPath*(): string = discard
+proc getProjectPath*(): string = raiseAssert "implemented in the vmops"
   ## Returns the path to the currently compiling project.
   ##
   ## This is not to be confused with `system.currentSourcePath <system.html#currentSourcePath.t>`_
@@ -1771,6 +1778,7 @@ proc getOffset*(arg: NimNode): int {.magic: "NSizeOf", noSideEffect.} =
 
 proc isExported*(n: NimNode): bool {.noSideEffect.} =
   ## Returns whether the symbol is exported or not.
+  raiseAssert "implemented in the vmops"
 
 proc extractDocCommentsAndRunnables*(n: NimNode): NimNode =
   ## returns a `nnkStmtList` containing the top-level doc comments and

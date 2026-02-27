@@ -25,7 +25,7 @@ when not (defined(cpu16) or defined(cpu8)):
         bytes: int
         data: WideCString
 
-    const arcLike = defined(gcArc) or defined(gcAtomicArc) or defined(gcOrc)
+    const arcLike = defined(gcArc) or defined(gcAtomicArc) or defined(gcOrc) or defined(gcYrc)
     when defined(nimAllowNonVarDestructor) and arcLike:
       proc `=destroy`(a: WideCStringObj) =
         if a.data != nil:
@@ -152,10 +152,12 @@ when not (defined(cpu16) or defined(cpu8)):
       yield result
 
   proc newWideCString*(size: int): WideCStringObj =
+    result = default(WideCStringObj)
     createWide(result, size * 2 + 2)
 
   proc newWideCString*(source: cstring, L: int): WideCStringObj =
     ## Warning:: `source` needs to be preallocated with the length `L`
+    result = default(WideCStringObj)
     createWide(result, L * 2 + 2)
     var d = 0
     for ch in runes(source, L):

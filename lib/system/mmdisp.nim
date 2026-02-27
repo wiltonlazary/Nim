@@ -38,6 +38,21 @@ type
   PByte = ptr ByteArray
   PString = ptr string
 
+when not defined(nimV2):
+  type
+    RefCount = int
+
+    Cell {.pure.} = object
+      refcount: RefCount  # the refcount and some flags
+      typ: PNimType
+      when trackAllocationSource:
+        filename: cstring
+        line: int
+      when useCellIds:
+        id: int
+
+    PCell = ptr Cell
+
 when declared(IntsPerTrunk):
   discard
 else:
@@ -55,14 +70,15 @@ elif defined(gogc):
   include system / mm / go
 
 elif (defined(nogc) or defined(gcDestructors)) and defined(useMalloc):
-  include system / mm / malloc
+  when not defined(useNimRtl):
+    include system / mm / malloc
 
   when defined(nogc):
     proc GC_getStatistics(): string = ""
-    proc newObj(typ: PNimType, size: int): pointer {.compilerproc.} =
+    proc newObj(typ: PNimType, size: int): pointer {.compilerproc, raises: [].} =
       result = alloc0(size)
 
-    proc newSeq(typ: PNimType, len: int): pointer {.compilerproc.} =
+    proc newSeq(typ: PNimType, len: int): pointer {.compilerproc, raises: [].} =
       result = newObj(typ, align(GenericSeqSize, typ.align) + len * typ.base.size)
       cast[PGenericSeq](result).len = len
       cast[PGenericSeq](result).reserved = len

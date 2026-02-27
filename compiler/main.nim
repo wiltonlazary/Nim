@@ -22,17 +22,17 @@ import
   modules,
   modulegraphs, lineinfos, pathutils, vmprofiler
 
-# ensure NIR compiles:
-import nir / nir
 
 when defined(nimPreviewSlimSystem):
   import std/[syncio, assertions]
 
-import ic / [cbackend, integrity, navigator, ic]
-
 import ../dist/checksums/src/checksums/sha1
 
 import pipelines
+
+when not defined(nimKochBootstrap):
+  import nifbackend
+  import deps
 
 when not defined(leanCompiler):
   import docgen
@@ -47,9 +47,6 @@ proc writeDepsFile(g: ModuleGraph) =
     if g.getModule(k).isNil:  # don't repeat includes which are also modules
       f.writeLine(toFullPath(g.config, k))
   f.close()
-
-proc writeNinjaFile(g: ModuleGraph) =
-  discard "to implement"
 
 proc writeCMakeDepsFile(conf: ConfigRef) =
   ## write a list of C files for build systems like CMake.
@@ -100,14 +97,6 @@ proc commandCheck(graph: ModuleGraph) =
   setPipeLinePass(graph, SemPass)
   compilePipelineProject(graph)
 
-  if conf.symbolFiles != disabledSf:
-    case conf.ideCmd
-    of ideDef: navDefinition(graph)
-    of ideUse: navUsages(graph)
-    of ideDus: navDefusages(graph)
-    else: discard
-    writeRodFiles(graph)
-
 when not defined(leanCompiler):
   proc commandDoc2(graph: ModuleGraph; ext: string) =
     handleDocOutputOptions graph.config
@@ -121,6 +110,38 @@ when not defined(leanCompiler):
       setPipeLinePass(graph, Docgen2Pass)
     else: raiseAssert $ext
     compilePipelineProject(graph)
+
+proc commandCompileToNif(graph: ModuleGraph) =
+  let conf = graph.config
+  extccomp.initVars(conf)
+  if conf.symbolFiles == disabledSf:
+    if {optRun, optForceFullMake} * conf.globalOptions == {optRun} or isDefined(conf, "nimBetterRun"):
+      if not changeDetectedViaJsonBuildInstructions(conf, conf.jsonBuildInstructionsFile):
+        # nothing changed
+        graph.config.notes = graph.config.mainPackageNotes
+        return
+
+  if not extccomp.ccHasSaneOverflow(conf):
+    conf.symbols.defineSymbol("nimEmulateOverflowChecks")
+
+  setPipeLinePass(graph, NifgenPass)
+  compilePipelineProject(graph)
+
+proc commandNifC(graph: ModuleGraph) =
+  ## Generate C code from precompiled NIF files.
+  ## This is the new IC approach: compile modules to NIF first with `nim m`,
+  ## then generate C code from the entry.nif file with whole-program DCE.
+  when not defined(nimKochBootstrap):
+    let conf = graph.config
+    extccomp.initVars(conf)
+
+    if not extccomp.ccHasSaneOverflow(conf):
+      conf.symbols.defineSymbol("nimEmulateOverflowChecks")
+
+    # Use the NIF backend to generate C code
+    nifbackend.generateCode(graph, conf.projectMainIdx)
+  else:
+    rawMessage(graph.config, errGenerated, "NIF backend not available during bootstrap build")
 
 proc commandCompileToC(graph: ModuleGraph) =
   let conf = graph.config
@@ -142,15 +163,7 @@ proc commandCompileToC(graph: ModuleGraph) =
   compilePipelineProject(graph)
   if graph.config.errorCounter > 0:
     return # issue #9933
-  if conf.symbolFiles == disabledSf:
-    cgenWriteModules(graph.backend, conf)
-  else:
-    if isDefined(conf, "nimIcIntegrityChecks"):
-      checkIntegrity(graph)
-    generateCode(graph)
-    # graph.backend can be nil under IC when nothing changed at all:
-    if graph.backend != nil:
-      cgenWriteModules(graph.backend, conf)
+  cgenWriteModules(graph.backend, conf)
   if conf.cmd != cmdTcc and graph.backend != nil:
     extccomp.callCCompiler(conf)
     # for now we do not support writing out a .json file with the build instructions when HCR is on
@@ -160,26 +173,6 @@ proc commandCompileToC(graph: ModuleGraph) =
       writeDepsFile(graph)
     if optGenCDeps in graph.config.globalOptions:
       writeCMakeDepsFile(conf)
-
-proc commandCompileToNir(graph: ModuleGraph) =
-  let conf = graph.config
-  extccomp.initVars(conf)
-  if conf.symbolFiles == disabledSf:
-    if {optRun, optForceFullMake} * conf.globalOptions == {optRun}:
-      if not changeDetectedViaJsonBuildInstructions(conf, conf.jsonBuildInstructionsFile):
-        # nothing changed
-        graph.config.notes = graph.config.mainPackageNotes
-        return
-
-  if not extccomp.ccHasSaneOverflow(conf):
-    conf.symbols.defineSymbol("nimEmulateOverflowChecks")
-
-  if conf.symbolFiles == disabledSf:
-    setPipeLinePass(graph, NirPass)
-  else:
-    setPipeLinePass(graph, SemPass)
-  compilePipelineProject(graph)
-  writeNinjaFile(graph)
 
 proc commandJsonScript(graph: ModuleGraph) =
   extccomp.runJsonBuildInstructions(graph.config, graph.config.jsonBuildInstructionsFile)
@@ -197,22 +190,19 @@ proc commandCompileToJS(graph: ModuleGraph) =
     if optGenScript in conf.globalOptions:
       writeDepsFile(graph)
 
-proc commandInteractive(graph: ModuleGraph; useNir: bool) =
+proc commandInteractive(graph: ModuleGraph) =
   graph.config.setErrorMaxHighMaybe
   initDefines(graph.config.symbols)
-  if useNir:
-    defineSymbol(graph.config.symbols, "noSignalHandler")
-  else:
-    defineSymbol(graph.config.symbols, "nimscript")
+  defineSymbol(graph.config.symbols, "nimscript")
   # note: seems redundant with -d:nimHasLibFFI
   when hasFFI: defineSymbol(graph.config.symbols, "nimffi")
-  setPipeLinePass(graph, if useNir: NirReplPass else: InterpreterPass)
+  setPipeLinePass(graph, InterpreterPass)
   compilePipelineSystemModule(graph)
   if graph.config.commandArgs.len > 0:
     discard graph.compilePipelineModule(fileInfoIdx(graph.config, graph.config.projectFull), {})
   else:
     var m = graph.makeStdinModule()
-    incl(m.flags, sfMainModule)
+    incl(m, sfMainModule)
     var idgen = IdGenerator(module: m.itemId.module, symId: m.itemId.item, typeId: 0)
     let s = llStreamOpenStdIn(onPrompt = proc() = flushDot(graph.config))
     discard processPipelineModule(graph, m, idgen, s)
@@ -232,10 +222,6 @@ proc commandScan(cache: IdentCache, config: ConfigRef) =
     closeLexer(L)
   else:
     rawMessage(config, errGenerated, "cannot open file: " & f.string)
-
-proc commandView(graph: ModuleGraph) =
-  let f = toAbsolute(mainCommandArg(graph.config), AbsoluteDir getCurrentDir()).addFileExt(RodExt)
-  rodViewer(f, graph.config, graph.cache)
 
 const
   PrintRopeCacheStats = false
@@ -285,7 +271,7 @@ proc mainCommand*(graph: ModuleGraph) =
       if conf.exc == excNone: conf.exc = excSetjmp
     of backendCpp:
       if conf.exc == excNone: conf.exc = excCpp
-    of backendObjc: discard
+    of backendObjc, backendNif: discard
     of backendJs:
       if conf.hcrOn:
         # XXX: At the moment, system.nim cannot be compiled in JS mode
@@ -293,8 +279,6 @@ proc mainCommand*(graph: ModuleGraph) =
         # and it has added this define implictly, so we must undo that here.
         # A better solution might be to fix system.nim
         undefSymbol(conf.symbols, "useNimRtl")
-    of backendNir:
-      if conf.exc == excNone: conf.exc = excGoto
     of backendInvalid: raiseAssert "unreachable"
 
   proc compileToBackend() =
@@ -305,7 +289,7 @@ proc mainCommand*(graph: ModuleGraph) =
     of backendCpp: commandCompileToC(graph)
     of backendObjc: commandCompileToC(graph)
     of backendJs: commandCompileToJS(graph)
-    of backendNir: commandCompileToNir(graph)
+    of backendNif: commandCompileToNif(graph)
     of backendInvalid: raiseAssert "unreachable"
 
   template docLikeCmd(body) =
@@ -336,8 +320,6 @@ proc mainCommand*(graph: ModuleGraph) =
   case conf.cmd
   of cmdBackends:
     compileToBackend()
-    when BenchIC:
-      echoTimes graph.packed
   of cmdTcc:
     when hasTinyCBackend:
       extccomp.setCC(conf, "tcc", unknownLineInfo)
@@ -434,17 +416,28 @@ proc mainCommand*(graph: ModuleGraph) =
   of cmdCheck:
     commandCheck(graph)
   of cmdM:
-    graph.config.symbolFiles = v2Sf
-    setUseIc(graph.config.symbolFiles != disabledSf)
+    # cmdM uses NIF files, not ROD files
+    graph.config.symbolFiles = disabledSf
+    setUseIc(true)
     commandCheck(graph)
+  of cmdNifC:
+    setUseIc(true)
+    # Generate C code from NIF files
+    wantMainModule(conf)
+    setOutFile(conf)
+    commandNifC(graph)
+  of cmdIc:
+    # Generate .build.nif for nifmake
+    setUseIc(true)
+    wantMainModule(conf)
+    when not defined(nimKochBootstrap):
+      commandIc(conf)
+    else:
+      rawMessage(conf, errGenerated, "nim deps not available in bootstrap build")
   of cmdParse:
     wantMainModule(conf)
     discard parseFile(conf.projectMainIdx, cache, conf)
-  of cmdRod:
-    wantMainModule(conf)
-    commandView(graph)
-    #msgWriteln(conf, "Beware: Indentation tokens depend on the parser's state!")
-  of cmdInteractive: commandInteractive(graph, isDefined(conf, "nir"))
+  of cmdInteractive: commandInteractive(graph)
   of cmdNimscript:
     if conf.projectIsCmd or conf.projectIsStdin: discard
     elif not fileExists(conf.projectFull):

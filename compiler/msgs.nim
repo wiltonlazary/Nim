@@ -30,7 +30,6 @@ proc toLowerAscii(a: var string) {.inline.} =
 
 proc flushDot*(conf: ConfigRef) =
   ## safe to call multiple times
-  # xxx one edge case not yet handled is when `printf` is called at CT with `compiletimeFFI`.
   let stdOrr = if optStdout in conf.globalOptions: stdout else: stderr
   let stdOrrKind = toStdOrrKind(stdOrr)
   if stdOrrKind in conf.lastMsgWasDot:
@@ -52,7 +51,7 @@ proc makeCString*(s: string): Rope =
   result = newStringOfCap(int(s.len.toFloat * 1.1) + 1)
   result.add("\"")
   for i in 0..<s.len:
-    # line wrapping of string litterals in cgen'd code was a bad idea, e.g. causes: bug #16265
+    # line wrapping of string literals in cgen'd code was a bad idea, e.g. causes: bug #16265
     # It also makes reading c sources or grepping harder, for zero benefit.
     # const MaxLineLength = 64
     # if (i + 1) mod MaxLineLength == 0:
@@ -60,12 +59,12 @@ proc makeCString*(s: string): Rope =
     toCChar(s[i], result)
   result.add('\"')
 
-proc newFileInfo(fullPath: AbsoluteFile, projPath: RelativeFile): TFileInfo =
+proc newFileInfo(fullPath: AbsoluteFile, projPath: RelativeFile; kind = fikSource): TFileInfo =
   result = TFileInfo(fullPath: fullPath, projPath: projPath,
                     shortName: fullPath.extractFilename,
                     quotedFullName: fullPath.string.makeCString,
-                    lines: @[]
-  )
+                    lines: @[],
+                    kind: kind)
   result.quotedName = result.shortName.makeCString
   when defined(nimpretty):
     if not result.fullPath.isEmpty:
@@ -132,6 +131,23 @@ proc fileInfoIdx*(conf: ConfigRef; filename: RelativeFile; isKnownFile: var bool
 proc fileInfoIdx*(conf: ConfigRef; filename: RelativeFile): FileIndex =
   var dummy: bool = false
   fileInfoIdx(conf, AbsoluteFile expandFilename(filename.string), dummy)
+
+proc registerNifSuffix*(conf: ConfigRef; suffix: string; isKnownFile: var bool): FileIndex =
+  result = conf.m.filenameToIndexTbl.getOrDefault(suffix, InvalidFileIdx)
+  if result == InvalidFileIdx:
+    isKnownFile = false
+    result = conf.m.fileInfos.len.FileIndex
+    conf.m.fileInfos.add(newFileInfo(AbsoluteFile suffix, RelativeFile suffix, fikNifModule))
+    conf.m.filenameToIndexTbl[suffix] = result
+  else:
+    isKnownFile = true
+
+proc fileInfoKind*(conf: ConfigRef; fileIdx: FileIndex): FileInfoKind =
+  ## Returns the kind of a FileIndex (source file or NIF module suffix).
+  if fileIdx.int >= 0 and fileIdx.int < conf.m.fileInfos.len:
+    result = conf.m.fileInfos[fileIdx.int].kind
+  else:
+    result = fikSource  # Default to source for unknown indices
 
 proc newLineInfo*(fileInfoIdx: FileIndex, line, col: int): TLineInfo =
   result = TLineInfo(fileIndex: fileInfoIdx)
@@ -224,7 +240,7 @@ proc setDirtyFile*(conf: ConfigRef; fileIdx: FileIndex; filename: AbsoluteFile) 
 
 proc setHash*(conf: ConfigRef; fileIdx: FileIndex; hash: string) =
   assert fileIdx.int32 >= 0
-  when defined(gcArc) or defined(gcOrc) or defined(gcAtomicArc):
+  when defined(gcArc) or defined(gcOrc) or defined(gcAtomicArc) or defined(gcYrc):
     conf.m.fileInfos[fileIdx.int32].hash = hash
   else:
     shallowCopy(conf.m.fileInfos[fileIdx.int32].hash, hash)
@@ -232,7 +248,7 @@ proc setHash*(conf: ConfigRef; fileIdx: FileIndex; hash: string) =
 
 proc getHash*(conf: ConfigRef; fileIdx: FileIndex): string =
   assert fileIdx.int32 >= 0
-  when defined(gcArc) or defined(gcOrc) or defined(gcAtomicArc):
+  when defined(gcArc) or defined(gcOrc) or defined(gcAtomicArc) or defined(gcYrc):
     result = conf.m.fileInfos[fileIdx.int32].hash
   else:
     shallowCopy(result, conf.m.fileInfos[fileIdx.int32].hash)
@@ -629,7 +645,7 @@ proc warningDeprecated*(conf: ConfigRef, info: TLineInfo = gCmdLineInfo, msg = "
   message(conf, info, warnDeprecated, msg)
 
 proc internalErrorImpl(conf: ConfigRef; info: TLineInfo, errMsg: string, info2: InstantiationInfo) =
-  if conf.cmd == cmdIdeTools and conf.structuredErrorHook.isNil: return
+  if conf.cmd in {cmdIdeTools, cmdCheck} and conf.structuredErrorHook.isNil: return
   writeContext(conf, info)
   liMessage(conf, info, errInternal, errMsg, doAbort, info2)
 
@@ -648,7 +664,9 @@ template internalAssert*(conf: ConfigRef, e: bool) =
 
 template lintReport*(conf: ConfigRef; info: TLineInfo, beau, got: string, extraMsg = "") =
   let m = "'$1' should be: '$2'$3" % [got, beau, extraMsg]
-  let msg = if optStyleError in conf.globalOptions: errGenerated else: hintName
+  let msg = if optStyleError in conf.globalOptions: errGenerated
+            elif optStyleWarning in conf.globalOptions: warnUser
+            else: hintName
   liMessage(conf, info, msg, m, doNothing, instLoc())
 
 proc quotedFilename*(conf: ConfigRef; fi: FileIndex): Rope =
@@ -668,31 +686,6 @@ template listMsg(title, r) =
 
 proc listWarnings*(conf: ConfigRef) = listMsg("Warnings:", warnMin..warnMax)
 proc listHints*(conf: ConfigRef) = listMsg("Hints:", hintMin..hintMax)
-
-proc uniqueModuleName*(conf: ConfigRef; fid: FileIndex): string =
-  ## The unique module name is guaranteed to only contain {'A'..'Z', 'a'..'z', '0'..'9', '_'}
-  ## so that it is useful as a C identifier snippet.
-  let path = AbsoluteFile toFullPath(conf, fid)
-  let rel =
-    if path.string.startsWith(conf.libpath.string):
-      relativeTo(path, conf.libpath).string
-    else:
-      relativeTo(path, conf.projectPath).string
-  let trunc = if rel.endsWith(".nim"): rel.len - len(".nim") else: rel.len
-  result = newStringOfCap(trunc)
-  for i in 0..<trunc:
-    let c = rel[i]
-    case c
-    of 'a'..'z':
-      result.add c
-    of {os.DirSep, os.AltSep}:
-      result.add 'Z' # because it looks a bit like '/'
-    of '.':
-      result.add 'O' # a circle
-    else:
-      # We mangle upper letters and digits too so that there cannot
-      # be clashes with our special meanings of 'Z' and 'O'
-      result.addInt ord(c)
 
 proc genSuccessX*(conf: ConfigRef) =
   let mem =

@@ -146,6 +146,7 @@ proc respondError(req: Request, code: HttpCode): Future[void] =
   result = req.client.send(msg)
 
 proc parseProtocol(protocol: string): tuple[orig: string, major, minor: int] =
+  result = default(tuple[orig: string, major, minor: int])
   var i = protocol.skipIgnoreCase("HTTP/")
   if i != 5:
     raise newException(ValueError, "Invalid request protocol. Got: " &
@@ -187,7 +188,7 @@ proc processRequest(
   # \n
   request.headers.clear()
   request.body = ""
-  when defined(gcArc) or defined(gcOrc) or defined(gcAtomicArc):
+  when defined(gcArc) or defined(gcOrc) or defined(gcAtomicArc) or defined(gcYrc):
     request.hostname = address
   else:
     request.hostname.shallowCopy(address)

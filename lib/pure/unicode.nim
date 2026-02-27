@@ -545,6 +545,8 @@ proc isLower*(c: Rune): bool {.rtl, extern: "nuc$1".} =
   p = binarySearch(c, toUpperSinglets, len(toUpperSinglets) div 2, 2)
   if p >= 0 and c == toUpperSinglets[p]:
     return true
+  else:
+    return false
 
 proc isUpper*(c: Rune): bool {.rtl, extern: "nuc$1".} =
   ## Returns true if ``c`` is a upper case rune.
@@ -565,6 +567,8 @@ proc isUpper*(c: Rune): bool {.rtl, extern: "nuc$1".} =
   p = binarySearch(c, toLowerSinglets, len(toLowerSinglets) div 2, 2)
   if p >= 0 and c == toLowerSinglets[p]:
     return true
+  else:
+    return false
 
 proc isAlpha*(c: Rune): bool {.rtl, extern: "nuc$1".} =
   ## Returns true if ``c`` is an *alpha* rune (i.e., a letter).
@@ -584,6 +588,8 @@ proc isAlpha*(c: Rune): bool {.rtl, extern: "nuc$1".} =
   p = binarySearch(c, alphaSinglets, len(alphaSinglets), 1)
   if p >= 0 and c == alphaSinglets[p]:
     return true
+  else:
+    return false
 
 proc isTitle*(c: Rune): bool {.rtl, extern: "nuc$1".} =
   ## Returns true if ``c`` is a Unicode titlecase code point.
@@ -608,6 +614,8 @@ proc isWhiteSpace*(c: Rune): bool {.rtl, extern: "nuc$1".} =
   var p = binarySearch(c, spaceRanges, len(spaceRanges) div 2, 2)
   if p >= 0 and c >= spaceRanges[p] and c <= spaceRanges[p+1]:
     return true
+  else:
+    return false
 
 proc isCombining*(c: Rune): bool {.rtl, extern: "nuc$1".} =
   ## Returns true if ``c`` is a Unicode combining code unit.
@@ -898,7 +906,7 @@ proc graphemeLen*(s: openArray[char]; i: Natural): Natural =
     doAssert a.graphemeLen(1) == 2 ## ñ
     doAssert a.graphemeLen(2) == 1
     doAssert a.graphemeLen(4) == 2 ## ó
-
+  result = 0
   var j = i.int
   var r, r2: Rune
   if j < s.len:
@@ -1029,6 +1037,19 @@ proc split*(s: openArray[char], sep: Rune, maxsplit: int = -1): seq[string] {.no
   ## that returns a sequence of substrings.
   accResult(split(s, sep, maxsplit))
 
+func getRuneHeadIdx(s: openArray[char], idx: int): int =
+  ## Given `[idx]` is within a Rune, then `s[result]` is the first byte of that Rune.
+  result = idx
+  if s[result] <= '\x7F': # 0b0111_1111
+    return
+  # 0b1...
+  dec result
+  for _ in 0..1:
+    if s[result] >= '\xC0': # 0b11xx_xxxx
+      # 0b110... or 0b1110...
+      return
+    dec result
+
 proc strip*(s: openArray[char], leading = true, trailing = true,
             runes: openArray[Rune] = unicodeSpaces): string {.noSideEffect,
             rtl, extern: "nucStrip".} =
@@ -1065,18 +1086,9 @@ proc strip*(s: openArray[char], leading = true, trailing = true,
       xI: int
       rune: Rune
     while i >= 0:
+      i = getRuneHeadIdx(s, i)
       xI = i
       fastRuneAt(s, xI, rune)
-      var yI = i - 1
-      while yI >= 0:
-        var
-          yIend = yI
-          pRune: Rune
-        fastRuneAt(s, yIend, pRune)
-        if yIend < xI: break
-        i = yI
-        rune = pRune
-        dec(yI)
       if not runes.contains(rune):
         eI = xI - 1
         break

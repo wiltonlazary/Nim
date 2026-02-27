@@ -65,7 +65,7 @@ runnableExamples:
 ## * `sha1 module <sha1.html>`_ for the SHA-1 checksum algorithm
 ## * `tables module <tables.html>`_ for hash tables
 
-import std/private/since
+import std/private/[since, jsutils]
 
 when defined(nimPreviewSlimSystem):
   import std/assertions
@@ -122,6 +122,7 @@ proc hiXorLo(a, b: uint64): uint64 {.inline.} =
     when Hash.sizeof < 8:
       result = hiXorLoFallback64(a, b)
     elif defined(gcc) or defined(llvm_gcc) or defined(clang):
+      result = uint64(0)
       {.emit: """__uint128_t r = `a`; r *= `b`; `result` = (r >> 64) ^ r;""".}
     elif defined(windows) and not defined(tcc):
       proc umul128(a, b: uint64, c: ptr uint64): uint64 {.importc: "_umul128", header: "intrin.h".}
@@ -190,7 +191,7 @@ proc hashData*(data: pointer, size: int): Hash =
   var h: Hash = 0
   when defined(js):
     var p: cstring
-    {.emit: """`p` = `Data`""".}
+    {.emit: """`p` = `Data`;""".}
   else:
     var p = cast[cstring](data)
   var i = 0
@@ -303,6 +304,35 @@ else:
 proc rotl32(x: uint32, r: int): uint32 {.inline.} =
   (x shl r) or (x shr (32 - r))
 
+proc load4e(s: openArray[byte], o=0): uint32 {.inline.} =
+  uint32(s[o + 3]) shl 24 or uint32(s[o + 2]) shl 16 or
+  uint32(s[o + 1]) shl  8 or uint32(s[o + 0])
+
+proc load8e(s: openArray[byte], o=0): uint64 {.inline.} =
+  uint64(s[o + 7]) shl 56 or uint64(s[o + 6]) shl 48 or
+  uint64(s[o + 5]) shl 40 or uint64(s[o + 4]) shl 32 or
+  uint64(s[o + 3]) shl 24 or uint64(s[o + 2]) shl 16 or
+  uint64(s[o + 1]) shl  8 or uint64(s[o + 0])
+
+when declared(copyMem):
+  from std/endians import littleEndian64, littleEndian32
+
+proc load4(s: openArray[byte], o=0): uint32 {.inline.} =
+  when nimvm: result = load4e(s, o)
+  else:
+    when declared copyMem:
+      result = uint32(0)
+      littleEndian32(addr result, addr s[o])
+    else: result = load4e(s, o)
+
+proc load8(s: openArray[byte], o=0): uint64 {.inline.} =
+  when nimvm: result = load8e(s, o)
+  else:
+    when declared copyMem:
+      result = uint64(0)
+      littleEndian64(addr result, addr s[o])
+    else: result = load8e(s, o)
+
 proc murmurHash(x: openArray[byte]): Hash =
   # https://github.com/PeterScott/murmur3/blob/master/murmur3.c
   const
@@ -316,27 +346,13 @@ proc murmurHash(x: openArray[byte]): Hash =
     stepSize = 4 # 32-bit
     n = size div stepSize
   var
-    h1: uint32
+    h1: uint32 = uint32(0)
     i = 0
-
-
-  template impl =
-    var j = stepSize
-    while j > 0:
-      dec j
-      k1 = (k1 shl 8) or (ord(x[i+j])).uint32
 
   # body
   while i < n * stepSize:
-    var k1: uint32
+    var k1 = load4(x, i)
 
-    when nimvm:
-      impl()
-    else:
-      when declared(copyMem):
-        copyMem(addr k1, addr x[i], 4)
-      else:
-        impl()
     inc i, stepSize
 
     k1 = imul(k1, c1)
@@ -348,7 +364,7 @@ proc murmurHash(x: openArray[byte]): Hash =
     h1 = h1*5 + n1
 
   # tail
-  var k1: uint32
+  var k1: uint32 = uint32(0)
   var rem = size mod stepSize
   while rem > 0:
     dec rem
@@ -382,28 +398,6 @@ proc hashVmImplByte(x: openArray[byte], sPos, ePos: int): Hash =
 const k0 = 0xc3a5c85c97cb3127u64 # Primes on (2^63, 2^64) for various uses
 const k1 = 0xb492b66fbe98f273u64
 const k2 = 0x9ae16a3b2f90404fu64
-
-proc load4e(s: openArray[byte], o=0): uint32 {.inline.} =
-  uint32(s[o + 3]) shl 24 or uint32(s[o + 2]) shl 16 or
-  uint32(s[o + 1]) shl  8 or uint32(s[o + 0])
-
-proc load8e(s: openArray[byte], o=0): uint64 {.inline.} =
-  uint64(s[o + 7]) shl 56 or uint64(s[o + 6]) shl 48 or
-  uint64(s[o + 5]) shl 40 or uint64(s[o + 4]) shl 32 or
-  uint64(s[o + 3]) shl 24 or uint64(s[o + 2]) shl 16 or
-  uint64(s[o + 1]) shl  8 or uint64(s[o + 0])
-
-proc load4(s: openArray[byte], o=0): uint32 {.inline.} =
-  when nimvm: result = load4e(s, o)
-  else:
-    when declared copyMem: copyMem result.addr, s[o].addr, result.sizeof
-    else: result = load4e(s, o)
-
-proc load8(s: openArray[byte], o=0): uint64 {.inline.} =
-  when nimvm: result = load8e(s, o)
-  else:
-    when declared copyMem: copyMem result.addr, s[o].addr, result.sizeof
-    else: result = load8e(s, o)
 
 proc lenU(s: openArray[byte]): uint64 {.inline.} = s.len.uint64
 
@@ -488,9 +482,9 @@ proc hashFarm(s: openArray[byte]): uint64 {.inline.} =
     x = seed
     y = seed*k1 + 113
     z = shiftMix(y*k2 + 113)*k2
-    v, w: Pair
+    v, w: Pair = default(Pair)
   x = x*k2 + load8(s)
-  let eos    = ((s.len - 1) div 64)*64
+  let eos = ((s.len - 1) div 64)*64
   let last64 = eos + ((s.len - 1) and 63) - 63
   while true:
     x = rotR(x + y + v[0] + load8(s, o+8), 37)*k1
@@ -518,6 +512,12 @@ proc hashFarm(s: openArray[byte]): uint64 {.inline.} =
   swap z, x
   len16 len16(v[0],w[0],mul) + shiftMix(y)*k0 + z, len16(v[1],w[1],mul) + x, mul
 
+const sHash2 = defined(nimStringHash2) or jsNoBigInt64
+
+template maybeFailJS_Number =
+  when jsNoBigInt64 and not defined(nimStringHash2):
+    {.error: "Must use `-d:nimStringHash2` when using `--jsbigint64:off`".}
+
 proc hash*(x: string): Hash =
   ## Efficient hashing of strings.
   ##
@@ -526,13 +526,13 @@ proc hash*(x: string): Hash =
   ## * `hashIgnoreCase <#hashIgnoreCase,string>`_
   runnableExamples:
     doAssert hash("abracadabra") != hash("AbracadabrA")
-
-  when defined nimPreviewHashFarm: # Default switched -> `not nimStringHash2`
+  maybeFailJS_Number()
+  when not sHash2:
     result = cast[Hash](hashFarm(toOpenArrayByte(x, 0, x.high)))
   else:
-    when nimvm:
-      result = hashVmImpl(x, 0, high(x))
-    else:
+    #when nimvm:
+    #  result = hashVmImpl(x, 0, high(x))
+    when true:
       result = murmurHash(toOpenArrayByte(x, 0, high(x)))
 
 proc hash*(x: cstring): Hash =
@@ -542,21 +542,22 @@ proc hash*(x: cstring): Hash =
     doAssert hash(cstring"AbracadabrA") == hash("AbracadabrA")
     doAssert hash(cstring"abracadabra") != hash(cstring"AbracadabrA")
 
-  when defined nimPreviewHashFarm: # Default switched -> `not nimStringHash2`
+  maybeFailJS_Number()
+  when not sHash2:
     when defined js:
       let xx = $x
       result = cast[Hash](hashFarm(toOpenArrayByte(xx, 0, xx.high)))
     else:
       result = cast[Hash](hashFarm(toOpenArrayByte(x, 0, x.high)))
   else:
-    when nimvm:
-      hashVmImpl(x, 0, high(x))
-    else:
+    #when nimvm:
+    #  result = hashVmImpl(x, 0, high(x))
+    when true:
       when not defined(js):
-        murmurHash(toOpenArrayByte(x, 0, x.high))
+        result = murmurHash(toOpenArrayByte(x, 0, x.high))
       else:
         let xx = $x
-        murmurHash(toOpenArrayByte(xx, 0, high(xx)))
+        result = murmurHash(toOpenArrayByte(xx, 0, high(xx)))
 
 proc hash*(sBuf: string, sPos, ePos: int): Hash =
   ## Efficient hashing of a string buffer, from starting
@@ -567,7 +568,8 @@ proc hash*(sBuf: string, sPos, ePos: int): Hash =
     var a = "abracadabra"
     doAssert hash(a, 0, 3) == hash(a, 7, 10)
 
-  when defined nimPreviewHashFarm: # Default switched -> `not nimStringHash2`
+  maybeFailJS_Number()
+  when not sHash2:
     result = cast[Hash](hashFarm(toOpenArrayByte(sBuf, sPos, ePos)))
   else:
     murmurHash(toOpenArrayByte(sBuf, sPos, ePos))
@@ -705,17 +707,17 @@ proc hash*[A](x: openArray[A]): Hash =
   ## Efficient hashing of arrays and sequences.
   ## There must be a `hash` proc defined for the element type `A`.
   when A is byte:
-    when defined nimPreviewHashFarm: # Default switched -> `not nimStringHash2`
+    when not sHash2:
       result = cast[Hash](hashFarm(x))
     else:
       result = murmurHash(x)
   elif A is char:
-    when defined nimPreviewHashFarm: # Default switched -> `not nimStringHash2`
+    when not sHash2:
       result = cast[Hash](hashFarm(toOpenArrayByte(x, 0, x.high)))
     else:
-      when nimvm:
-        result = hashVmImplChar(x, 0, x.high)
-      else:
+      #when nimvm:
+      #  result = hashVmImplChar(x, 0, x.high)
+      when true:
         result = murmurHash(toOpenArrayByte(x, 0, x.high))
   else:
     result = 0
@@ -732,22 +734,23 @@ proc hash*[A](aBuf: openArray[A], sPos, ePos: int): Hash =
   runnableExamples:
     let a = [1, 2, 5, 1, 2, 6]
     doAssert hash(a, 0, 1) == hash(a, 3, 4)
-
   when A is byte:
-    when defined nimPreviewHashFarm: # Default switched -> `not nimStringHash2`
+    maybeFailJS_Number()
+    when not sHash2:
       result = cast[Hash](hashFarm(toOpenArray(aBuf, sPos, ePos)))
     else:
-      when nimvm:
-        result = hashVmImplByte(aBuf, sPos, ePos)
-      else:
+      #when nimvm:
+      #  result = hashVmImplByte(aBuf, sPos, ePos)
+      when true:
         result = murmurHash(toOpenArray(aBuf, sPos, ePos))
   elif A is char:
-    when defined nimPreviewHashFarm: # Default switched -> `not nimStringHash2`
+    maybeFailJS_Number()
+    when not sHash2:
       result = cast[Hash](hashFarm(toOpenArrayByte(aBuf, sPos, ePos)))
     else:
-      when nimvm:
-        result = hashVmImplChar(aBuf, sPos, ePos)
-      else:
+      #when nimvm:
+      #  result = hashVmImplChar(aBuf, sPos, ePos)
+      when true:
         result = murmurHash(toOpenArrayByte(aBuf, sPos, ePos))
   else:
     for i in sPos .. ePos:

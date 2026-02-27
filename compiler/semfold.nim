@@ -16,7 +16,7 @@ import
   commands, magicsys, modulegraphs, lineinfos, wordrecg
 
 import std/[strutils, math, strtabs]
-from system/memory import nimCStrLen
+#from system/memory import nimCStrLen
 
 when defined(nimPreviewSlimSystem):
   import std/[assertions, formatfloat]
@@ -24,7 +24,7 @@ when defined(nimPreviewSlimSystem):
 proc errorType*(g: ModuleGraph): PType =
   ## creates a type representing an error state
   result = newType(tyError, g.idgen, g.owners[^1])
-  result.flags.incl tfCheckedForDestructor
+  result.flagsImpl.incl tfCheckedForDestructor
 
 proc getIntLitTypeG(g: ModuleGraph; literal: PNode; idgen: IdGenerator): PType =
   # we cache some common integer literal types for performance:
@@ -179,29 +179,30 @@ proc evalOp(m: TMagic, n, a, b, c: PNode; idgen: IdGenerator; g: ModuleGraph): P
     let argB = getInt(b)
     result = newIntNodeT(if argA > argB: argA else: argB, n, idgen, g)
   of mShlI:
+    let valueB = toInt64(getInt(b)) and (n.typ.size * 8 - 1)
     case skipTypes(n.typ, abstractRange).kind
-    of tyInt8: result = newIntNodeT(toInt128(toInt8(getInt(a)) shl toInt64(getInt(b))), n, idgen, g)
-    of tyInt16: result = newIntNodeT(toInt128(toInt16(getInt(a)) shl toInt64(getInt(b))), n, idgen, g)
-    of tyInt32: result = newIntNodeT(toInt128(toInt32(getInt(a)) shl toInt64(getInt(b))), n, idgen, g)
-    of tyInt64: result = newIntNodeT(toInt128(toInt64(getInt(a)) shl toInt64(getInt(b))), n, idgen, g)
+    of tyInt8: result = newIntNodeT(toInt128(toInt8(getInt(a)) shl valueB), n, idgen, g)
+    of tyInt16: result = newIntNodeT(toInt128(toInt16(getInt(a)) shl valueB), n, idgen, g)
+    of tyInt32: result = newIntNodeT(toInt128(toInt32(getInt(a)) shl valueB), n, idgen, g)
+    of tyInt64: result = newIntNodeT(toInt128(toInt64(getInt(a)) shl valueB), n, idgen, g)
     of tyInt:
       if g.config.target.intSize == 4:
-        result = newIntNodeT(toInt128(toInt32(getInt(a)) shl toInt64(getInt(b))), n, idgen, g)
+        result = newIntNodeT(toInt128(toInt32(getInt(a)) shl valueB), n, idgen, g)
       else:
-        result = newIntNodeT(toInt128(toInt64(getInt(a)) shl toInt64(getInt(b))), n, idgen, g)
-    of tyUInt8: result = newIntNodeT(toInt128(toUInt8(getInt(a)) shl toInt64(getInt(b))), n, idgen, g)
-    of tyUInt16: result = newIntNodeT(toInt128(toUInt16(getInt(a)) shl toInt64(getInt(b))), n, idgen, g)
-    of tyUInt32: result = newIntNodeT(toInt128(toUInt32(getInt(a)) shl toInt64(getInt(b))), n, idgen, g)
-    of tyUInt64: result = newIntNodeT(toInt128(toUInt64(getInt(a)) shl toInt64(getInt(b))), n, idgen, g)
+        result = newIntNodeT(toInt128(toInt64(getInt(a)) shl valueB), n, idgen, g)
+    of tyUInt8: result = newIntNodeT(toInt128(toUInt8(getInt(a)) shl valueB), n, idgen, g)
+    of tyUInt16: result = newIntNodeT(toInt128(toUInt16(getInt(a)) shl valueB), n, idgen, g)
+    of tyUInt32: result = newIntNodeT(toInt128(toUInt32(getInt(a)) shl valueB), n, idgen, g)
+    of tyUInt64: result = newIntNodeT(toInt128(toUInt64(getInt(a)) shl valueB), n, idgen, g)
     of tyUInt:
       if g.config.target.intSize == 4:
-        result = newIntNodeT(toInt128(toUInt32(getInt(a)) shl toInt64(getInt(b))), n, idgen, g)
+        result = newIntNodeT(toInt128(toUInt32(getInt(a)) shl valueB), n, idgen, g)
       else:
-        result = newIntNodeT(toInt128(toUInt64(getInt(a)) shl toInt64(getInt(b))), n, idgen, g)
+        result = newIntNodeT(toInt128(toUInt64(getInt(a)) shl valueB), n, idgen, g)
     else: internalError(g.config, n.info, "constant folding for shl")
   of mShrI:
-    var a = cast[uint64](getInt(a))
-    let b = cast[uint64](getInt(b))
+    var a = castToUInt64(getInt(a))
+    let b = castToUInt64(getInt(b)) and cast[uint64](n.typ.size * 8 - 1)
     # To support the ``-d:nimOldShiftRight`` flag, we need to mask the
     # signed integers to cut off the extended sign bit in the internal
     # representation.
@@ -220,12 +221,13 @@ proc evalOp(m: TMagic, n, a, b, c: PNode; idgen: IdGenerator; g: ModuleGraph): P
     let c = cast[BiggestInt](a shr b)
     result = newIntNodeT(toInt128(c), n, idgen, g)
   of mAshrI:
+    let valueB = toInt64(getInt(b)) and (n.typ.size * 8 - 1)
     case skipTypes(n.typ, abstractRange).kind
-    of tyInt8: result =  newIntNodeT(toInt128(ashr(toInt8(getInt(a)), toInt8(getInt(b)))), n, idgen, g)
-    of tyInt16: result = newIntNodeT(toInt128(ashr(toInt16(getInt(a)), toInt16(getInt(b)))), n, idgen, g)
-    of tyInt32: result = newIntNodeT(toInt128(ashr(toInt32(getInt(a)), toInt32(getInt(b)))), n, idgen, g)
+    of tyInt8: result =  newIntNodeT(toInt128(ashr(toInt8(getInt(a)), valueB)), n, idgen, g)
+    of tyInt16: result = newIntNodeT(toInt128(ashr(toInt16(getInt(a)), valueB)), n, idgen, g)
+    of tyInt32: result = newIntNodeT(toInt128(ashr(toInt32(getInt(a)), valueB)), n, idgen, g)
     of tyInt64, tyInt:
-      result = newIntNodeT(toInt128(ashr(toInt64(getInt(a)), toInt64(getInt(b)))), n, idgen, g)
+      result = newIntNodeT(toInt128(ashr(toInt64(getInt(a)), valueB)), n, idgen, g)
     else: internalError(g.config, n.info, "constant folding for ashr")
   of mDivI:
     let argA = getInt(a)
@@ -301,6 +303,9 @@ proc evalOp(m: TMagic, n, a, b, c: PNode; idgen: IdGenerator; g: ModuleGraph): P
     result.info = n.info
   of mMinusSet:
     result = nimsets.diffSets(g.config, a, b)
+    result.info = n.info
+  of mXorSet:
+    result = nimsets.symdiffSets(g.config, a, b)
     result.info = n.info
   of mConStrStr: result = newStrNodeT(getStrOrChar(a) & getStrOrChar(b), n, g)
   of mInSet: result = newIntNodeT(toInt128(ord(inSet(a, b))), n, idgen, g)
@@ -420,14 +425,17 @@ proc foldConv(n, a: PNode; idgen: IdGenerator; g: ModuleGraph; check = false): P
       result = newIntNodeT(toInt128(getFloat(a)), n, idgen, g)
     of tyChar, tyUInt..tyUInt64, tyInt..tyInt64:
       var val = a.getOrdValue
-      if check: rangeCheck(n, val, g)
-      result = newIntNodeT(val, n, idgen, g)
       if dstTyp.kind in {tyUInt..tyUInt64}:
+        result = newIntNodeT(maskBytes(val, int getSize(g.config, dstTyp)), n, idgen, g)
         result.transitionIntKind(nkUIntLit)
+      else:
+        if check: rangeCheck(n, val, g)
+        result = newIntNodeT(val, n, idgen, g)
     else:
       result = a
       result.typ = n.typ
-    if check and result.kind in {nkCharLit..nkUInt64Lit}:
+    if check and result.kind in {nkCharLit..nkUInt64Lit} and
+          dstTyp.kind notin {tyUInt..tyUInt64}:
       rangeCheck(n, getInt(result), g)
   of tyFloat..tyFloat64:
     case srcTyp.kind
@@ -465,19 +473,20 @@ proc foldArrayAccess(m: PSym, n: PNode; idgen: IdGenerator; g: ModuleGraph): PNo
       if result.kind == nkExprColonExpr: result = result[1]
     else:
       result = nil
-      localError(g.config, n.info, formatErrorIndexBound(idx, x.len-1) & $n)
+      #localError(g.config, n.info, formatErrorIndexBound(idx, x.len-1) & $n)
   of nkBracket:
     idx -= toInt64(firstOrd(g.config, x.typ))
     if idx >= 0 and idx < x.len: result = x[int(idx)]
     else:
       result = nil
-      localError(g.config, n.info, formatErrorIndexBound(idx, x.len-1) & $n)
+      #localError(g.config, n.info, formatErrorIndexBound(idx, x.len-1) & $n)
   of nkStrLit..nkTripleStrLit:
     result = newNodeIT(nkCharLit, x.info, n.typ)
     if idx >= 0 and idx < x.strVal.len:
       result.intVal = ord(x.strVal[int(idx)])
     else:
-      localError(g.config, n.info, formatErrorIndexBound(idx, x.strVal.len-1) & $n)
+      result = nil
+      #localError(g.config, n.info, formatErrorIndexBound(idx, x.strVal.len-1) & $n)
   else: result = nil
 
 proc foldFieldAccess(m: PSym, n: PNode; idgen: IdGenerator; g: ModuleGraph): PNode =
@@ -583,7 +592,7 @@ proc foldDefine(m, s: PSym, n: PNode; idgen: IdGenerator; g: ModuleGraph): PNode
             raise newException(ValueError, "invalid enum value: " & str)
         else:
           localError(g.config, s.info, "unsupported type $1 for define '$2'" %
-            [name, typeToString(rawTyp)])
+            [typeToString(rawTyp), name])
       except ValueError as e:
         localError(g.config, s.info,
           "could not process define '$1' of type $2; $3" %
@@ -701,10 +710,7 @@ proc getConstExpr(m: PSym, n: PNode; idgen: IdGenerator; g: ModuleGraph): PNode 
     except DivByZeroDefect:
       localError(g.config, n.info, "division by zero")
   of nkAddr:
-    var a = getConstExpr(m, n[0], idgen, g)
-    if a != nil:
-      result = n
-      n[0] = a
+    result = nil # don't fold paths containing nkAddr
   of nkBracket, nkCurly:
     result = copyNode(n)
     for son in n.items:
@@ -750,6 +756,8 @@ proc getConstExpr(m: PSym, n: PNode; idgen: IdGenerator; g: ModuleGraph): PNode 
     if leValueConv(n[1], a) and leValueConv(a, n[2]):
       result = a              # a <= x and x <= b
       result.typ = n.typ
+    elif n.typ.kind in {tyUInt..tyUInt64}:
+      discard "don't check uints"
     else:
       localError(g.config, n.info,
         "conversion from $1 to $2 is invalid" %

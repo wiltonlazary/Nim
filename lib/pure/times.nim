@@ -131,9 +131,10 @@
   ===========  =================================================================================  ==============================================
 
   Other strings can be inserted by putting them in `''`. For example
-  `hh'->'mm` will give `01->56`.  The following characters can be
-  inserted without quoting them: `:` `-` `(` `)` `/` `[` `]`
-  `,`. A literal `'` can be specified with `''`.
+  `hh'->'mm` will give `01->56`.  In addition to spaces,
+  the following characters can be inserted without quoting them:
+  `:` `-` `,` `.` `(` `)` `/` `[` `]`.
+  A literal `'` can be specified with `''`.
 
   However you don't need to necessarily separate format patterns, as an
   unambiguous format string like `yyyyMMddhhmmss` is also valid (although
@@ -214,27 +215,29 @@ when defined(nimPreviewSlimSystem):
 
 when defined(js):
   import std/jscore
+  import std/private/jsutils
 
-  # This is really bad, but overflow checks are broken badly for
-  # ints on the JS backend. See #6752.
-  {.push overflowChecks: off.}
-  proc `*`(a, b: int64): int64 =
-    system.`*`(a, b)
-  proc `*`(a, b: int): int =
-    system.`*`(a, b)
-  proc `+`(a, b: int64): int64 =
-    system.`+`(a, b)
-  proc `+`(a, b: int): int =
-    system.`+`(a, b)
-  proc `-`(a, b: int64): int64 =
-    system.`-`(a, b)
-  proc `-`(a, b: int): int =
-    system.`-`(a, b)
-  proc inc(a: var int, b: int) =
-    system.inc(a, b)
-  proc inc(a: var int64, b: int) =
-    system.inc(a, b)
-  {.pop.}
+  when jsNoBigInt64:
+    # This is really bad, but overflow checks are broken badly for
+    # ints on the JS backend. See #6752.
+    {.push overflowChecks: off.}
+    proc `*`(a, b: int64): int64 =
+      system.`*`(a, b)
+    proc `*`(a, b: int): int =
+      system.`*`(a, b)
+    proc `+`(a, b: int64): int64 =
+      system.`+`(a, b)
+    proc `+`(a, b: int): int =
+      system.`+`(a, b)
+    proc `-`(a, b: int64): int64 =
+      system.`-`(a, b)
+    proc `-`(a, b: int): int =
+      system.`-`(a, b)
+    proc inc(a: var int, b: int) =
+      system.inc(a, b)
+    proc inc(a: var int64, b: int) =
+      system.inc(a, b)
+    {.pop.}
 
 elif defined(posix):
   import std/posix
@@ -379,9 +382,9 @@ type
       ## timezones. The `times` module only supplies implementations for the
       ## system's local time and UTC.
     zonedTimeFromTimeImpl: proc (x: Time): ZonedTime
-        {.tags: [], raises: [], benign.}
+        {.tags: [], raises: [], gcsafe.}
     zonedTimeFromAdjTimeImpl: proc (x: Time): ZonedTime
-        {.tags: [], raises: [], benign.}
+        {.tags: [], raises: [], gcsafe.}
     name: string
 
   ZonedTime* = object ## Represents a point in time with an associated
@@ -429,7 +432,7 @@ else:
 # Helper procs
 #
 
-{.pragma: operator, rtl, noSideEffect, benign.}
+{.pragma: operator, rtl, noSideEffect, gcsafe.}
 
 proc convert*[T: SomeInteger](unitFrom, unitTo: FixedTimeUnit, quantity: T): T
     {.inline.} =
@@ -448,6 +451,7 @@ proc normalize[T: Duration|Time](seconds, nanoseconds: int64): T =
   ## Normalize a (seconds, nanoseconds) pair and return it as either
   ## a `Duration` or `Time`. A normalized `Duration|Time` has a
   ## positive nanosecond part in the range `NanosecondRange`.
+  result = default(T)
   result.seconds = seconds + convert(Nanoseconds, Seconds, nanoseconds)
   var nanosecond = nanoseconds mod convert(Seconds, Nanoseconds, 1)
   if nanosecond < 0:
@@ -483,7 +487,7 @@ proc toEpochDay(monthday: MonthdayRange, month: Month, year: int): int64 =
   ## Get the epoch day from a year/month/day date.
   ## The epoch day is the number of days since 1970/01/01
   ## (it might be negative).
-  # Based on http://howardhinnant.github.io/date_algorithms.html
+  # Based on https://howardhinnant.github.io/date_algorithms.html
   assertValidDate monthday, month, year
   var (y, m, d) = (year, ord(month), monthday.int)
   if m <= 2:
@@ -500,7 +504,7 @@ proc fromEpochDay(epochday: int64):
   ## Get the year/month/day date from a epoch day.
   ## The epoch day is the number of days since 1970/01/01
   ## (it might be negative).
-  # Based on http://howardhinnant.github.io/date_algorithms.html
+  # Based on https://howardhinnant.github.io/date_algorithms.html
   var z = epochday
   z.inc 719468
   let era = (if z >= 0: z else: z - 146096) div 146097
@@ -514,7 +518,7 @@ proc fromEpochDay(epochday: int64):
   return (d.MonthdayRange, m.Month, (y + ord(m <= 2)).int)
 
 proc getDayOfYear*(monthday: MonthdayRange, month: Month, year: int):
-    YeardayRange {.tags: [], raises: [], benign.} =
+    YeardayRange {.tags: [], raises: [], gcsafe.} =
   ## Returns the day of the year.
   ## Equivalent with `dateTime(year, month, monthday, 0, 0, 0, 0).yearday`.
   runnableExamples:
@@ -534,7 +538,7 @@ proc getDayOfYear*(monthday: MonthdayRange, month: Month, year: int):
     result = daysUntilMonth[month] + monthday - 1
 
 proc getDayOfWeek*(monthday: MonthdayRange, month: Month, year: int): WeekDay
-    {.tags: [], raises: [], benign.} =
+    {.tags: [], raises: [], gcsafe.} =
   ## Returns the day of the week enum from day, month and year.
   ## Equivalent with `dateTime(year, month, monthday, 0, 0, 0, 0).weekday`.
   runnableExamples:
@@ -910,8 +914,7 @@ proc abs*(a: Duration): Duration =
 
 proc initTime*(unix: int64, nanosecond: NanosecondRange): Time =
   ## Create a `Time <#Time>`_ from a unix timestamp and a nanosecond part.
-  result.seconds = unix
-  result.nanosecond = nanosecond
+  result = Time(seconds: unix, nanosecond: nanosecond)
 
 proc nanosecond*(time: Time): NanosecondRange =
   ## Get the fractional part of a `Time` as the number
@@ -919,21 +922,21 @@ proc nanosecond*(time: Time): NanosecondRange =
   time.nanosecond
 
 proc fromUnix*(unix: int64): Time
-    {.benign, tags: [], raises: [], noSideEffect.} =
+    {.gcsafe, tags: [], raises: [], noSideEffect.} =
   ## Convert a unix timestamp (seconds since `1970-01-01T00:00:00Z`)
   ## to a `Time`.
   runnableExamples:
     doAssert $fromUnix(0).utc == "1970-01-01T00:00:00Z"
   initTime(unix, 0)
 
-proc toUnix*(t: Time): int64 {.benign, tags: [], raises: [], noSideEffect.} =
+proc toUnix*(t: Time): int64 {.gcsafe, tags: [], raises: [], noSideEffect.} =
   ## Convert `t` to a unix timestamp (seconds since `1970-01-01T00:00:00Z`).
   ## See also `toUnixFloat` for subsecond resolution.
   runnableExamples:
     doAssert fromUnix(0).toUnix() == 0
   t.seconds
 
-proc fromUnixFloat(seconds: float): Time {.benign, tags: [], raises: [], noSideEffect.} =
+proc fromUnixFloat(seconds: float): Time {.gcsafe, tags: [], raises: [], noSideEffect.} =
   ## Convert a unix timestamp in seconds to a `Time`; same as `fromUnix`
   ## but with subsecond resolution.
   runnableExamples:
@@ -943,7 +946,7 @@ proc fromUnixFloat(seconds: float): Time {.benign, tags: [], raises: [], noSideE
   let nsecs = (seconds - secs) * 1e9
   initTime(secs.int64, nsecs.NanosecondRange)
 
-proc toUnixFloat(t: Time): float {.benign, tags: [], raises: [].} =
+proc toUnixFloat(t: Time): float {.gcsafe, tags: [], raises: [].} =
   ## Same as `toUnix` but using subsecond resolution.
   runnableExamples:
     let t = getTime()
@@ -970,9 +973,9 @@ proc toWinTime*(t: Time): int64 =
   result = t.seconds * rateDiff + epochDiff + t.nanosecond div 100
 
 proc getTimeImpl(typ: typedesc[Time]): Time =
-  discard "implemented in the vm"
+  raiseAssert "implemented in the vm"
 
-proc getTime*(): Time {.tags: [TimeEffect], benign.} =
+proc getTime*(): Time {.tags: [TimeEffect], gcsafe.} =
   ## Gets the current time as a `Time` with up to nanosecond resolution.
   when nimvm:
     result = getTimeImpl(Time)
@@ -1151,7 +1154,7 @@ proc isLeapDay*(dt: DateTime): bool {.since: (1, 1).} =
   assertDateTimeInitialized dt
   dt.year.isLeapYear and dt.month == mFeb and dt.monthday == 29
 
-proc toTime*(dt: DateTime): Time {.tags: [], raises: [], benign.} =
+proc toTime*(dt: DateTime): Time {.tags: [], raises: [], gcsafe.} =
   ## Converts a `DateTime` to a `Time` representing the same point in time.
   assertDateTimeInitialized dt
   let epochDay = toEpochDay(dt.monthday, dt.month, dt.year)
@@ -1194,9 +1197,9 @@ proc initDateTime(zt: ZonedTime, zone: Timezone): DateTime =
 proc newTimezone*(
       name: string,
       zonedTimeFromTimeImpl: proc (time: Time): ZonedTime
-          {.tags: [], raises: [], benign.},
+          {.tags: [], raises: [], gcsafe.},
       zonedTimeFromAdjTimeImpl: proc (adjTime: Time): ZonedTime
-          {.tags: [], raises: [], benign.}
+          {.tags: [], raises: [], gcsafe.}
     ): owned Timezone =
   ## Create a new `Timezone`.
   ##
@@ -1246,6 +1249,7 @@ proc zonedTimeFromAdjTime*(zone: Timezone, adjTime: Time): ZonedTime =
 proc `$`*(zone: Timezone): string =
   ## Returns the name of the timezone.
   if zone != nil: result = zone.name
+  else: result = ""
 
 proc `==`*(zone1, zone2: Timezone): bool =
   ## Two `Timezone`'s are considered equal if their name is equal.
@@ -1259,12 +1263,12 @@ proc `==`*(zone1, zone2: Timezone): bool =
   zone1.name == zone2.name
 
 proc inZone*(time: Time, zone: Timezone): DateTime
-    {.tags: [], raises: [], benign.} =
+    {.tags: [], raises: [], gcsafe.} =
   ## Convert `time` into a `DateTime` using `zone` as the timezone.
   result = initDateTime(zone.zonedTimeFromTime(time), zone)
 
 proc inZone*(dt: DateTime, zone: Timezone): DateTime
-    {.tags: [], raises: [], benign.} =
+    {.tags: [], raises: [], gcsafe.} =
   ## Returns a `DateTime` representing the same point in time as `dt` but
   ## using `zone` as the timezone.
   assertDateTimeInitialized dt
@@ -1279,14 +1283,14 @@ proc toAdjTime(dt: DateTime): Time =
   result = initTime(seconds, dt.nanosecond)
 
 when defined(js):
-  proc localZonedTimeFromTime(time: Time): ZonedTime {.benign.} =
+  proc localZonedTimeFromTime(time: Time): ZonedTime {.gcsafe.} =
     let jsDate = newDate(time.seconds * 1000)
     let offset = jsDate.getTimezoneOffset() * secondsInMin
     result.time = time
     result.utcOffset = offset
     result.isDst = false
 
-  proc localZonedTimeFromAdjTime(adjTime: Time): ZonedTime {.benign.} =
+  proc localZonedTimeFromAdjTime(adjTime: Time): ZonedTime {.gcsafe.} =
     let utcDate = newDate(adjTime.seconds * 1000)
     let localDate = newDate(utcDate.getUTCFullYear(), utcDate.getUTCMonth(),
         utcDate.getUTCDate(), utcDate.getUTCHours(), utcDate.getUTCMinutes(),
@@ -1333,13 +1337,11 @@ else:
       return ((a.int64 - tm.toAdjUnix).int, tm.tm_isdst > 0)
     return (0, false)
 
-  proc localZonedTimeFromTime(time: Time): ZonedTime {.benign.} =
+  proc localZonedTimeFromTime(time: Time): ZonedTime {.gcsafe.} =
     let (offset, dst) = getLocalOffsetAndDst(time.seconds)
-    result.time = time
-    result.utcOffset = offset
-    result.isDst = dst
+    result = ZonedTime(time: time, utcOffset: offset, isDst: dst)
 
-  proc localZonedTimeFromAdjTime(adjTime: Time): ZonedTime {.benign.} =
+  proc localZonedTimeFromAdjTime(adjTime: Time): ZonedTime {.gcsafe.} =
     var adjUnix = adjTime.seconds
     let past = adjUnix - secondsInDay
     let (pastOffset, _) = getLocalOffsetAndDst(past)
@@ -1406,7 +1408,7 @@ proc local*(t: Time): DateTime =
   ## Shorthand for `t.inZone(local())`.
   t.inZone(local())
 
-proc now*(): DateTime {.tags: [TimeEffect], benign.} =
+proc now*(): DateTime {.tags: [TimeEffect], gcsafe.} =
   ## Get the current time as a  `DateTime` in the local timezone.
   ## Shorthand for `getTime().local`.
   ##
@@ -1498,11 +1500,11 @@ proc `-=`*(a: var DateTime, b: Duration) =
   a = a - b
 
 proc getDateStr*(dt = now()): string {.rtl, extern: "nt$1", tags: [TimeEffect].} =
-  ## Gets the current local date as a string of the format `YYYY-MM-DD`.
+  ## Gets the current local date as a string of the format `YYYY-MM-dd`.
   runnableExamples:
     echo getDateStr(now() - 1.months)
   assertDateTimeInitialized dt
-  result = newStringOfCap(10)  # len("YYYY-MM-DD") == 10
+  result = newStringOfCap(10)  # len("YYYY-MM-dd") == 10
   result.addInt dt.year
   result.add '-'
   result.add intToStr(dt.monthZero, 2)
@@ -1631,7 +1633,7 @@ const
         "Sunday"],
   )
 
-  FormatLiterals = {' ', '-', '/', ':', '(', ')', '[', ']', ','}
+  FormatLiterals = {' ', '-', '/', ':', '(', ')', '[', ']', ',', '.'}
 
 proc `$`*(f: TimeFormat): string =
   ## Returns the format string that was used to construct `f`.
@@ -1669,6 +1671,8 @@ proc parseInt(s: string, b: var int, start = 0, maxLen = int.high,
       return 0
     b = b * sign
     result = i - start
+  else:
+    result = 0
 
 iterator tokens(f: string): tuple[kind: FormatTokenKind, token: string] =
   var i = 0
@@ -1765,8 +1769,7 @@ proc initTimeFormat*(format: string): TimeFormat =
   runnableExamples:
     let f = initTimeFormat("yyyy-MM-dd")
     doAssert "2000-01-01" == "2000-01-01".parse(f).format(f)
-  result.formatStr = format
-  result.patterns = @[]
+  result = TimeFormat(formatStr: format, patterns: @[])
   for kind, token in format.tokens:
     case kind
     of tkLiteral:
@@ -2013,7 +2016,6 @@ proc parsePattern(input: string, pattern: FormatPattern, i: var int,
     var year = takeInt(2..2)
     var thisCen = now().year div 100
     parsed.year = some(thisCen*100 + year)
-    result = year > 0
   of yyyy:
     let year =
       if input[i] in {'+', '-'}:
@@ -2252,9 +2254,10 @@ proc parse*(input: string, f: TimeFormat, zone: Timezone = local(),
     let f = initTimeFormat("yyyy-MM-dd")
     let dt = dateTime(2000, mJan, 01, 00, 00, 00, 00, utc())
     doAssert dt == "2000-01-01".parse(f, utc())
+  result = default(DateTime)
   var inpIdx = 0 # Input index
   var patIdx = 0 # Pattern index
-  var parsed: ParsedTime
+  var parsed: ParsedTime = default(ParsedTime)
   while inpIdx <= input.high and patIdx <= f.patterns.high:
     let pattern = f.patterns[patIdx].FormatPattern
     case pattern
@@ -2324,7 +2327,7 @@ proc parseTime*(input: string, f: static[string], zone: Timezone): Time
   const f2 = initTimeFormat(f)
   result = input.parse(f2, zone).toTime()
 
-proc `$`*(dt: DateTime): string {.tags: [], raises: [], benign.} =
+proc `$`*(dt: DateTime): string {.tags: [], raises: [], gcsafe.} =
   ## Converts a `DateTime` object to a string representation.
   ## It uses the format `yyyy-MM-dd'T'HH:mm:sszzz`.
   runnableExamples:
@@ -2336,7 +2339,7 @@ proc `$`*(dt: DateTime): string {.tags: [], raises: [], benign.} =
   else:
     result = format(dt, "yyyy-MM-dd'T'HH:mm:sszzz")
 
-proc `$`*(time: Time): string {.tags: [], raises: [], benign.} =
+proc `$`*(time: Time): string {.tags: [], raises: [], gcsafe.} =
   ## Converts a `Time` value to a string representation. It will use the local
   ## time zone and use the format `yyyy-MM-dd'T'HH:mm:sszzz`.
   runnableExamples:
@@ -2349,9 +2352,9 @@ proc `$`*(time: Time): string {.tags: [], raises: [], benign.} =
 # TimeInterval
 #
 
-proc initTimeInterval*(nanoseconds, microseconds, milliseconds,
-                       seconds, minutes, hours,
-                       days, weeks, months, years: int = 0): TimeInterval =
+proc initTimeInterval*(nanoseconds = 0, microseconds = 0, milliseconds = 0,
+                       seconds = 0, minutes = 0, hours = 0,
+                       days = 0, weeks = 0, months = 0, years = 0): TimeInterval =
   ## Creates a new `TimeInterval <#TimeInterval>`_.
   ##
   ## This proc doesn't perform any normalization! For example,
@@ -2365,29 +2368,33 @@ proc initTimeInterval*(nanoseconds, microseconds, milliseconds,
     let dt = dateTime(2000, mJan, 01, 12, 00, 00, 00, utc())
     doAssert $(dt + day) == "2000-01-02T12:00:00Z"
     doAssert initTimeInterval(hours = 24) != initTimeInterval(days = 1)
-  result.nanoseconds = nanoseconds
-  result.microseconds = microseconds
-  result.milliseconds = milliseconds
-  result.seconds = seconds
-  result.minutes = minutes
-  result.hours = hours
-  result.days = days
-  result.weeks = weeks
-  result.months = months
-  result.years = years
+  result = TimeInterval(
+    nanoseconds: nanoseconds,
+    microseconds: microseconds,
+    milliseconds: milliseconds,
+    seconds: seconds,
+    minutes: minutes,
+    hours: hours,
+    days: days,
+    weeks: weeks,
+    months: months,
+    years: years
+  )
 
 proc `+`*(ti1, ti2: TimeInterval): TimeInterval =
   ## Adds two `TimeInterval` objects together.
-  result.nanoseconds = ti1.nanoseconds + ti2.nanoseconds
-  result.microseconds = ti1.microseconds + ti2.microseconds
-  result.milliseconds = ti1.milliseconds + ti2.milliseconds
-  result.seconds = ti1.seconds + ti2.seconds
-  result.minutes = ti1.minutes + ti2.minutes
-  result.hours = ti1.hours + ti2.hours
-  result.days = ti1.days + ti2.days
-  result.weeks = ti1.weeks + ti2.weeks
-  result.months = ti1.months + ti2.months
-  result.years = ti1.years + ti2.years
+  result = TimeInterval(
+    nanoseconds: ti1.nanoseconds + ti2.nanoseconds,
+    microseconds: ti1.microseconds + ti2.microseconds,
+    milliseconds: ti1.milliseconds + ti2.milliseconds,
+    seconds: ti1.seconds + ti2.seconds,
+    minutes: ti1.minutes + ti2.minutes,
+    hours: ti1.hours + ti2.hours,
+    days: ti1.days + ti2.days,
+    weeks: ti1.weeks + ti2.weeks,
+    months: ti1.months + ti2.months,
+    years: ti1.years + ti2.years
+  )
 
 proc `-`*(ti: TimeInterval): TimeInterval =
   ## Reverses a time interval
@@ -2454,6 +2461,7 @@ proc between*(startDt, endDt: DateTime): TimeInterval =
     doAssert between(a, b) == ti
     doAssert between(a, b) == -between(b, a)
 
+  result = default(TimeInterval)
   if startDt.timezone != endDt.timezone:
     return between(startDt.utc, endDt.utc)
   elif endDt < startDt:
@@ -2553,7 +2561,7 @@ proc toParts*(ti: TimeInterval): TimeIntervalParts =
     var tp = toParts(initTimeInterval(years = 1, nanoseconds = 123))
     doAssert tp[Years] == 1
     doAssert tp[Nanoseconds] == 123
-
+  result = default(TimeIntervalParts)
   var index = 0
   for name, value in fieldPairs(ti):
     result[index.TimeUnit()] = value
@@ -2839,7 +2847,7 @@ when not defined(js):
     when defined(posix) and not defined(osx) and declared(CLOCK_THREAD_CPUTIME_ID):
       # 'clocksPerSec' is a compile-time constant, possibly a
       # rather awful one, so use clock_gettime instead
-      var ts: Timespec
+      var ts: Timespec = default(Timespec)
       discard clock_gettime(CLOCK_THREAD_CPUTIME_ID, ts)
       result = toFloat(ts.tv_sec.int) +
         toFloat(ts.tv_nsec.int) / 1_000_000_000
