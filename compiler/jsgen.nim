@@ -1544,7 +1544,7 @@ proc genSymAddr(p: PProc, n: PNode, typ: PType, r: var TCompRes) =
     r.res = s.loc.snippet
     r.address = ""
     r.typ = etyNone
-  of skVar, skLet, skResult:
+  of skVar, skLet, skResult, skTemp, skForVar:
     r.kind = resExpr
     let jsType = mapType(p):
       if typ.isNil:
@@ -2018,8 +2018,12 @@ proc createVar(p: PProc, typ: PType, indirect: bool): Rope =
     if indirect: result = "[$1]" % [result]
   of tyTuple:
     result = rope("{")
+    var first = true
     for i in 0..<t.len:
-      if i > 0: result.add(", ")
+      # Do not produce code for void types
+      if isEmptyType(t[i]): continue
+      if not first: result.add(", ")
+      first = false
       result.addf("Field$1: $2", [i.rope,
             createVar(p, t[i], false)])
     result.add("}")
